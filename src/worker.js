@@ -4,7 +4,9 @@ export default {
     const USERNAME = "vinet";
     const PASSWORD = "Vinet007!";
     const SESSION_NAME = "vinet_session";
-    const AUTO_REFRESH_MS = 60 * 60 * 1000; // 1 hour
+
+    const AUTO_REFRESH_MS = 60 * 60 * 1000;   // 1 hour
+    const ADMIN_CACHE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
     function html(body) {
       return new Response(body, { headers: { "Content-Type": "text/html" } });
@@ -31,9 +33,9 @@ export default {
       return request.headers.get("CF-Connecting-IP") || null;
     }
 
-    // ----------------------------------
-    // SAME HELPER YOUR OTHER APPS USE
-    // ----------------------------------
+    // -------------------------------
+    // Splynx fetch helper
+    // -------------------------------
     async function splynxFetch(env, path, opt = {}) {
       const base = (env.SPLYNX_URL || "").replace(/\/$/, "");
       const headers = {
@@ -51,6 +53,9 @@ export default {
       return { ok: r.ok, status: r.status, json: j, text: t };
     }
 
+    // -------------------------------
+    // CACHE HELPERS — TASKS (id=1)
+    // -------------------------------
     async function getCache(env) {
       return env.DB.prepare(
         "SELECT payload,last_updated FROM task_cache WHERE id=1"
@@ -64,9 +69,54 @@ export default {
       ).bind(JSON.stringify(payload), Date.now()).run();
     }
 
-    // ----------------------------------
-    // LOAD TASKS + CACHE
-    // ----------------------------------
+    // -------------------------------
+    // CACHE HELPERS — ADMINS (id=2)
+    // -------------------------------
+    async function getAdminCache(env) {
+      return env.DB.prepare(
+        "SELECT payload,last_updated FROM task_cache WHERE id=2"
+      ).first();
+    }
+
+    async function setAdminCache(env, payload) {
+      return env.DB.prepare(
+        `INSERT OR REPLACE INTO task_cache (id,payload,last_updated)
+         VALUES (2,?,?)`
+      ).bind(JSON.stringify(payload), Date.now()).run();
+    }
+
+    // -------------------------------
+    // LOAD ADMINS (CACHE 24H)
+    // -------------------------------
+    async function loadAdmins(env) {
+
+      const cached = await getAdminCache(env);
+
+      if (cached && Date.now() - cached.last_updated < ADMIN_CACHE_MS)
+        return JSON.parse(cached.payload);
+
+      const res = await splynxFetch(env, "/api/2.0/admin/administration/administrators");
+
+      if (!res.ok) {
+        console.error("ADMIN API ERROR", res.status, res.text);
+        throw new Error("Admin load failed");
+      }
+
+      const admins = res.json?.data || res.json || [];
+
+      const map = {};
+      for (const a of admins) {
+        map[a.id] = a.name || a.login || `Admin #${a.id}`;
+      }
+
+      await setAdminCache(env, map);
+
+      return map;
+    }
+
+    // -------------------------------
+    // LOAD TASKS (CACHE 1H)
+    // -------------------------------
     async function loadTasks(env, force = false) {
 
       const cached = await getCache(env);
@@ -82,11 +132,12 @@ export default {
       }
 
       const tasks = res.json?.data || res.json || [];
+      const admins = await loadAdmins(env);
+
       const grouped = {};
 
       for (const t of tasks) {
 
-        // --- REAL TODO FILTER ---
         const isTodo =
           String(t.workflow_status_id) === "1" &&
           String(t.closed) === "0" &&
@@ -94,10 +145,11 @@ export default {
 
         if (!isTodo) continue;
 
-        const admin =
-          t.assigned_to_title ||
-          t.assigned_to_name ||
-          "Unassigned";
+        let admin = "Unassigned";
+
+        if (t.assignee) {
+          admin = admins[t.assignee] || `Admin #${t.assignee}`;
+        }
 
         if (!grouped[admin]) grouped[admin] = [];
 
@@ -117,18 +169,16 @@ export default {
       return { data: grouped, last: Date.now() };
     }
 
-    // ----------------------------------
+    // -------------------------------
     // REQUEST FLOW
-    // ----------------------------------
+    // -------------------------------
     const url = new URL(request.url);
     const origin = url.origin;
     const ip = await getClientIP(request);
 
-    // IP restriction
     if (!isAllowedIP(ip))
       return html(`<h2>Sorry — this tool is only available inside the Vinet network.</h2>`);
 
-    // Login page
     if (url.pathname === "/login" && request.method === "GET") {
       return html(`
         <h2>Vinet Scheduling Login</h2>
@@ -140,7 +190,6 @@ export default {
       `);
     }
 
-    // Login submit
     if (url.pathname === "/login" && request.method === "POST") {
       const f = await request.formData();
       if (f.get("u") === USERNAME && f.get("p") === PASSWORD) {
@@ -155,18 +204,15 @@ export default {
       return new Response("Invalid login", { status: 401 });
     }
 
-    // Require login
     if (!hasSession(request))
       return Response.redirect(origin + "/login", 302);
 
-    // API routes
     if (url.pathname === "/api/tasks")
       return json(await loadTasks(env, false));
 
     if (url.pathname === "/api/refresh")
       return json(await loadTasks(env, true));
 
-    // UI
     return html(UI_HTML);
   }
 }
