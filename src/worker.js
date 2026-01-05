@@ -19,7 +19,12 @@ export default {
     function isAllowedIP(ip) {
       if (!ip) return false;
       const parts = ip.split(".");
-      return parts[0] === "160" && parts[1] === "226" && (Number(parts[2]) >= 128 && Number(parts[2]) <= 143);
+      return (
+        parts[0] === "160" &&
+        parts[1] === "226" &&
+        Number(parts[2]) >= 128 &&
+        Number(parts[2]) <= 143
+      );
     }
 
     function hasSession(request) {
@@ -31,30 +36,42 @@ export default {
     }
 
     async function fetchSplynx(env) {
-      const res = await fetch(`${env.SPYLNX_URL}/api/2.0/admin/ticketing/tickets`, {
-        headers: { Authorization: env.SPYLNX_AUTH }
-      });
+      const res = await fetch(
+        `${env.SPYLNX_URL}/api/2.0/admin/ticketing/tickets`,
+        {
+          headers: { Authorization: env.SPYLNX_AUTH },
+        }
+      );
 
       if (!res.ok) throw new Error("Splynx failure");
       return res.json();
     }
 
     async function getCache(env) {
-      return env.DB.prepare("SELECT payload,last_updated FROM task_cache WHERE id=1").first();
+      return env.DB.prepare(
+        "SELECT payload,last_updated FROM task_cache WHERE id=1"
+      ).first();
     }
 
     async function setCache(env, payload) {
-      return env.DB.prepare(`
+      return env.DB.prepare(
+        `
         INSERT OR REPLACE INTO task_cache (id,payload,last_updated)
         VALUES (1,?,?)
-      `).bind(JSON.stringify(payload), Date.now()).run();
+      `
+      )
+        .bind(JSON.stringify(payload), Date.now())
+        .run();
     }
 
     async function loadTasks(env, force = false) {
       const cached = await getCache(env);
 
       if (!force && cached && Date.now() - cached.last_updated < AUTO_REFRESH_MS)
-        return { data: JSON.parse(cached.payload), last: cached.last_updated };
+        return {
+          data: JSON.parse(cached.payload),
+          last: cached.last_updated,
+        };
 
       const api = await fetchSplynx(env);
 
@@ -74,7 +91,7 @@ export default {
           type: t.type || "",
           category: t.category || "",
           note: t.description_plain || "",
-          link: `${env.SPYLNX_URL}/admin/ticketing/tickets/${t.id}`
+          link: `${env.SPYLNX_URL}/admin/ticketing/tickets/${t.id}`,
         });
       }
 
@@ -84,12 +101,21 @@ export default {
     }
 
     const url = new URL(request.url);
+    const origin = url.origin;
     const ip = await getClientIP(request);
 
+    // ------------------------------------------------
+    // IP restriction
+    // ------------------------------------------------
     if (!isAllowedIP(ip)) {
-      return html(`<h2>Sorry — this tool is only available inside the Vinet network.</h2>`);
+      return html(
+        `<h2>Sorry — this tool is only available inside the Vinet network.</h2>`
+      );
     }
 
+    // ------------------------------------------------
+    // LOGIN SCREENS
+    // ------------------------------------------------
     if (url.pathname === "/login" && request.method === "GET") {
       return html(`
         <h2>Vinet Scheduling Login</h2>
@@ -108,16 +134,23 @@ export default {
           status: 302,
           headers: {
             "Set-Cookie": `${SESSION_NAME}=1; HttpOnly; Secure; Path=/`,
-            "Location": "/"
-          }
+            "Location": origin + "/",
+          },
         });
       }
       return new Response("Invalid login", { status: 401 });
     }
 
-    if (!hasSession(request))
-      return Response.redirect("/login", 302);
+    // ------------------------------------------------
+    // REQUIRE LOGIN
+    // ------------------------------------------------
+    if (!hasSession(request)) {
+      return Response.redirect(origin + "/login", 302);
+    }
 
+    // ------------------------------------------------
+    // API ENDPOINTS
+    // ------------------------------------------------
     if (url.pathname === "/api/tasks") {
       return json(await loadTasks(env, false));
     }
@@ -126,9 +159,12 @@ export default {
       return json(await loadTasks(env, true));
     }
 
+    // ------------------------------------------------
+    // MAIN UI
+    // ------------------------------------------------
     return html(UI_HTML);
-  }
-}
+  },
+};
 
 const UI_HTML = `
 <!doctype html>
