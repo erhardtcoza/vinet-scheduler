@@ -1,5 +1,6 @@
 export default {
   async fetch(request, env, ctx) {
+
     const USERNAME = "vinet";
     const PASSWORD = "Vinet007!";
     const SESSION_NAME = "vinet_session";
@@ -30,16 +31,17 @@ export default {
       return request.headers.get("CF-Connecting-IP") || null;
     }
 
-    // -------------------------------
-    // REAL SCHEDULING API CALL
-    // -------------------------------
+    // ----------------------------------
+    // REAL SCHEDULING TASKS ENDPOINT
+    // ----------------------------------
     async function fetchSplynx(env) {
 
-      // 👇 THIS IS THE CORRECT ENDPOINT
-      const url = `${env.SPYLNX_URL}/api/2.0/admin/scheduling/tasks`;
+      const url = `${env.SPLYNX_URL}/api/2.0/admin/scheduling/tasks`;
 
       const res = await fetch(url, {
-        headers: { Authorization: env.SPYLNX_AUTH }
+        headers: {
+          Authorization: env.AUTH_HEADER
+        }
       });
 
       if (!res.ok) {
@@ -64,10 +66,8 @@ export default {
       ).bind(JSON.stringify(payload), Date.now()).run();
     }
 
-    // -------------------------------
-    // LOAD TASKS + CACHE
-    // -------------------------------
     async function loadTasks(env, force = false) {
+
       const cached = await getCache(env);
 
       if (!force && cached && Date.now() - cached.last_updated < AUTO_REFRESH_MS)
@@ -75,29 +75,31 @@ export default {
 
       const api = await fetchSplynx(env);
 
-      // NOTE: API shape normally {data:[...]} — but fallback safely
       const tasks = api.data || api;
 
       const grouped = {};
 
       for (const t of tasks) {
 
-        // We ONLY care about todo
+        // ONLY todo
         if (t.status !== "todo") continue;
 
-        const assigned = t.admin_name || t.assigned_to_name || "Unassigned";
+        const admin =
+          t.assigned_to_title ||
+          t.assigned_to_name ||
+          "Unassigned";
 
-        if (!grouped[assigned]) grouped[assigned] = [];
+        if (!grouped[admin]) grouped[admin] = [];
 
-        grouped[assigned].push({
+        grouped[admin].push({
           id: t.id,
-          title: t.title || t.subject || "",
-          created: t.date_created || t.created || "",
-          town: t.location || t.address_town || "",
+          title: t.title || "",
+          created: t.date_created || "",
+          town: t.address_town || "",
           type: t.type || "",
           category: t.category || "",
-          note: t.note || t.description_plain || "",
-          link: `${env.SPYLNX_URL}/admin/scheduling/tasks/${t.id}`
+          note: t.description || "",
+          link: `${env.SPLYNX_URL}/admin/scheduling/tasks/${t.id}`
         });
       }
 
@@ -113,11 +115,11 @@ export default {
     const origin = url.origin;
     const ip = await getClientIP(request);
 
-    // IP CHECK
+    // IP restriction
     if (!isAllowedIP(ip))
       return html(`<h2>Sorry — this tool is only available inside the Vinet network.</h2>`);
 
-    // LOGIN PAGE
+    // Login page
     if (url.pathname === "/login" && request.method === "GET") {
       return html(`
         <h2>Vinet Scheduling Login</h2>
@@ -129,7 +131,7 @@ export default {
       `);
     }
 
-    // LOGIN SUBMIT
+    // Login submit
     if (url.pathname === "/login" && request.method === "POST") {
       const f = await request.formData();
       if (f.get("u") === USERNAME && f.get("p") === PASSWORD) {
@@ -144,11 +146,11 @@ export default {
       return new Response("Invalid login", { status: 401 });
     }
 
-    // AUTH GUARD
+    // Auth guard
     if (!hasSession(request))
       return Response.redirect(origin + "/login", 302);
 
-    // API
+    // API calls
     if (url.pathname === "/api/tasks")
       return json(await loadTasks(env, false));
 
@@ -160,8 +162,7 @@ export default {
   }
 }
 
-const UI_HTML = `
-<!doctype html>
+const UI_HTML = `<!doctype html>
 <html>
 <head>
 <title>Vinet Scheduling</title>
@@ -307,5 +308,4 @@ load();
 </script>
 
 </body>
-</html>
-`;
+</html>`;
