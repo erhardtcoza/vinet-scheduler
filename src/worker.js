@@ -43,47 +43,34 @@ export default {
 
       const r = await fetch(base + path, { ...opt, headers });
       const t = await r.text();
-
       let j = null;
       try { j = JSON.parse(t); } catch {}
-
       return { ok: r.ok, status: r.status, json: j, text: t };
     }
 
-    async function getCache(env) {
-      return env.DB.prepare("SELECT payload,last_updated FROM task_cache WHERE id=1").first();
+    async function getCache(env, id) {
+      return env.DB.prepare("SELECT payload,last_updated FROM task_cache WHERE id=?").bind(id).first();
     }
 
-    async function setCache(env, payload) {
+    async function setCache(env, id, payload) {
       return env.DB.prepare(`
         INSERT OR REPLACE INTO task_cache (id,payload,last_updated)
-        VALUES (1,?,?)
-      `).bind(JSON.stringify(payload), Date.now()).run();
-    }
-
-    async function getAdminCache(env) {
-      return env.DB.prepare("SELECT payload,last_updated FROM task_cache WHERE id=2").first();
-    }
-
-    async function setAdminCache(env, payload) {
-      return env.DB.prepare(`
-        INSERT OR REPLACE INTO task_cache (id,payload,last_updated)
-        VALUES (2,?,?)
-      `).bind(JSON.stringify(payload), Date.now()).run();
+        VALUES (?,?,?)
+      `).bind(id, JSON.stringify(payload), Date.now()).run();
     }
 
     async function loadAdmins(env) {
-      const cached = await getAdminCache(env);
+      const cached = await getCache(env, 2);
       if (cached && Date.now() - cached.last_updated < ADMIN_CACHE_MS)
         return JSON.parse(cached.payload);
 
       const res = await splynxFetch(env, "/api/2.0/admin/administration/administrators");
-
       const admins = res.json?.data || res.json || [];
+
       const map = {};
       for (const a of admins) map[a.id] = a.name || a.login || `Admin #${a.id}`;
 
-      await setAdminCache(env, map);
+      await setCache(env, 2, map);
       return map;
     }
 
@@ -96,21 +83,46 @@ export default {
       return `${h}h ${m}m`;
     }
 
+    function getStatusName(t) {
+      return (
+        t.status_name ||
+        t.workflow_status_name ||
+        (t.workflow_status && t.workflow_status.name) ||
+        t.status ||
+        ""
+      ).trim();
+    }
+
     async function loadTasks(env, force = false) {
 
-      const cached = await getCache(env);
+      const cached = await getCache(env, 1);
       if (!force && cached && Date.now() - cached.last_updated < AUTO_REFRESH_MS)
         return { data: JSON.parse(cached.payload), last: cached.last_updated };
 
       const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
-      const admins = await loadAdmins(env);
+      if (!res.ok) throw new Error("Splynx error");
 
+      const admins = await loadAdmins(env);
       const tasks = res.json?.data || res.json || [];
 
       const grouped = {};
 
+      const pendingStatuses = [
+        "To Do",
+        "In progress",
+        "Add Work / Not Completed",
+        "Awaiting Client",
+        "Billing - More Info Req",
+        "Billing - To Bill"
+      ];
+
+      const doneStatuses = ["Done"];
+
       for (const t of tasks) {
 
+        const status = getStatusName(t);
+
+        if (status === "To Archive") continue;
         if (String(t.is_archived) === "1") continue;
 
         let admin = "Unassigned";
@@ -127,17 +139,16 @@ export default {
           created: t.created_at || "",
           completed: t.resolved_at || "",
           note: t.description || "",
+          status,
           sla: duration(t.created_at, t.resolved_at),
           link: (env.SPLYNX_URL || "").replace(/\/$/, "") + `/admin/scheduling/tasks/view?id=${t.id}`
         };
 
-        const isDone = String(t.closed) === "1" || !!t.resolved_at;
-
-        if (isDone) grouped[admin].done.push(obj);
-        else grouped[admin].pending.push(obj);
+        if (doneStatuses.includes(status)) grouped[admin].done.push(obj);
+        else if (pendingStatuses.includes(status)) grouped[admin].pending.push(obj);
       }
 
-      await setCache(env, grouped);
+      await setCache(env, 1, grouped);
 
       return { data: grouped, last: Date.now() };
     }
@@ -219,11 +230,11 @@ th{background:#f5f5f5;}
 <body>
 
 <div class="header">
-<img src="https://static.vinet.co.za/logo.jpeg">
-<h2>Vinet Scheduling</h2>
-<button onclick="refresh()">Refresh</button>
-<span id="last"></span>
-<span id="spinner">Loading...</span>
+  <img src="https://static.vinet.co.za/logo.jpeg">
+  <h2>Vinet Scheduling</h2>
+  <button onclick="refresh()">Refresh</button>
+  <span id="last"></span>
+  <span id="spinner">Loading...</span>
 </div>
 
 <div id="summary" class="summary"></div>
@@ -272,138 +283,139 @@ let order=JSON.parse(localStorage.getItem("tileOrder")||"[]");
 let activeUser="";
 
 async function load(force=false){
-document.getElementById("spinner").style.display="inline";
-const res=await fetch(force?"/api/refresh":"/api/tasks");
-const j=await res.json();
-data=j.data;
-buildFlat();
-renderTiles();
-renderGlobal();
-document.getElementById("summary").innerText="Total pending: "+tasksFlat.filter(t=>t.status==="Pending").length+" | Done: "+tasksFlat.filter(t=>t.status==="Done").length;
-document.getElementById("last").innerText="Last updated: "+new Date(j.last).toLocaleString();
-document.getElementById("spinner").style.display="none";
+  document.getElementById("spinner").style.display="inline";
+  const res=await fetch(force?"/api/refresh":"/api/tasks");
+  const j=await res.json();
+  data=j.data;
+  buildFlat();
+  renderTiles();
+  renderGlobal();
+  document.getElementById("summary").innerText="Total pending: "+tasksFlat.filter(t=>t.status==="Pending").length+" | Done: "+tasksFlat.filter(t=>t.status==="Done").length;
+  document.getElementById("last").innerText="Last updated: "+new Date(j.last).toLocaleString();
+  document.getElementById("spinner").style.display="none";
 }
 
 function refresh(){ load(true); }
 
 function buildFlat(){
-tasksFlat=[];
-Object.keys(data).forEach(a=>{
-data[a].pending.forEach(t=>tasksFlat.push({...t,admin:a,status:"Pending"}));
-data[a].done.forEach(t=>tasksFlat.push({...t,admin:a,status:"Done"}));
-});
+  tasksFlat=[];
+  Object.keys(data).forEach(a=>{
+    data[a].pending.forEach(t=>tasksFlat.push({...t,admin:a,status:"Pending"}));
+    data[a].done.forEach(t=>tasksFlat.push({...t,admin:a,status:"Done"}));
+  });
 }
 
 function orderedAdmins(){
-const admins=Object.keys(data);
-const set=new Set(order);
-const existing=order.filter(a=>admins.includes(a));
-const missing=admins.filter(a=>!set.has(a));
-return [...existing,...missing];
+  const admins=Object.keys(data);
+  const set=new Set(order);
+  const existing=order.filter(a=>admins.includes(a));
+  const missing=admins.filter(a=>!set.has(a));
+  return [...existing,...missing];
 }
 
 function renderTiles(){
-const t=document.getElementById("tiles");
-t.innerHTML="";
-orderedAdmins().forEach(admin=>{
-if(!data[admin]) return;
-const p=data[admin].pending.length;
-const d=data[admin].done.length;
-const box=document.createElement("div");
-box.className="tile";
-box.innerHTML=\`
-<b>\${admin}</b>
-<div class="count">\${p}</div>
-<div class="meta">Done: \${d}</div>
-<label><input type="checkbox" \${hiddenAdmins.includes(admin)?"checked":""} onchange="toggleHide('\${admin}')"> Hide</label>
-\`;
-box.onclick=()=>openModal(admin);
-t.appendChild(box);
-});
+  const t=document.getElementById("tiles");
+  t.innerHTML="";
+  orderedAdmins().forEach(admin=>{
+    if(!data[admin]) return;
+    const p=data[admin].pending.length;
+    const d=data[admin].done.length;
+    const box=document.createElement("div");
+    box.className="tile";
+    if(hiddenAdmins.includes(admin)) box.classList.add("hidden");
+    box.innerHTML=\`
+      <b>\${admin}</b>
+      <div class="count">\${p}</div>
+      <div class="meta">Done: \${d}</div>
+      <label><input type="checkbox" \${hiddenAdmins.includes(admin)?"checked":""} onchange="toggleHide('\${admin}')"> Hide</label>
+    \`;
+    box.onclick=()=>openModal(admin);
+    t.appendChild(box);
+  });
 }
 
 function toggleHide(a){
-if(hiddenAdmins.includes(a)) hiddenAdmins=hiddenAdmins.filter(x=>x!==a);
-else hiddenAdmins.push(a);
-localStorage.setItem("hiddenAdmins",JSON.stringify(hiddenAdmins));
-renderTiles();renderGlobal();
+  if(hiddenAdmins.includes(a)) hiddenAdmins=hiddenAdmins.filter(x=>x!==a);
+  else hiddenAdmins.push(a);
+  localStorage.setItem("hiddenAdmins",JSON.stringify(hiddenAdmins));
+  renderTiles();renderGlobal();
 }
 
 function openModal(a){
-activeUser=a;
-document.getElementById("mtitle").innerText=a;
-renderRows();
-document.getElementById("modal").style.display="flex";
+  activeUser=a;
+  document.getElementById("mtitle").innerText=a;
+  renderRows();
+  document.getElementById("modal").style.display="flex";
 }
 
 function closeModal(){document.getElementById("modal").style.display="none";}
 
 function ageColor(d){
-const days=(Date.now()-new Date(d))/86400000;
-if(days<=3) return "row-green";
-if(days<=6) return "row-yellow";
-return "row-red";
+  const days=(Date.now()-new Date(d))/86400000;
+  if(days<=3) return "row-green";
+  if(days<=6) return "row-yellow";
+  return "row-red";
 }
 
 function renderRows(){
-const mode=document.getElementById("viewmode").value;
-const q=document.getElementById("search").value.toLowerCase();
-let arr=[];
-if(mode!=="done") arr=arr.concat(data[activeUser].pending.map(t=>({...t,status:"Pending"})));
-if(mode!=="pending") arr=arr.concat(data[activeUser].done.map(t=>({...t,status:"Done"})));
-arr=arr.filter(t=>
-(t.customer+"").toLowerCase().includes(q)||
-(t.address||"").toLowerCase().includes(q)||
-(t.title||"").toLowerCase().includes(q)
-);
-const el=document.getElementById("rows");
-el.innerHTML="";
-arr.forEach(t=>{
-const r=document.createElement("tr");
-if(t.status==="Pending") r.className=ageColor(t.created);
-r.onclick=()=>window.open(t.link,"_blank");
-r.innerHTML=\`
-<td>\${t.id}</td>
-<td>\${t.customer||""}</td>
-<td>\${t.address||""}</td>
-<td>\${t.status}</td>
-<td>\${t.priority||""}</td>
-<td>\${t.created||""}</td>
-<td>\${t.completed||""}</td>
-<td>\${t.sla||""}</td>
-\`;
-el.appendChild(r);
-});
+  const mode=document.getElementById("viewmode").value;
+  const q=document.getElementById("search").value.toLowerCase();
+  let arr=[];
+  if(mode!=="done") arr=arr.concat(data[activeUser].pending.map(t=>({...t,status:"Pending"})));
+  if(mode!=="pending") arr=arr.concat(data[activeUser].done.map(t=>({...t,status:"Done"})));
+  arr=arr.filter(t=>
+    (t.customer+"").toLowerCase().includes(q)||
+    (t.address||"").toLowerCase().includes(q)||
+    (t.title||"").toLowerCase().includes(q)
+  );
+  const el=document.getElementById("rows");
+  el.innerHTML="";
+  arr.forEach(t=>{
+    const r=document.createElement("tr");
+    if(t.status==="Pending") r.className=ageColor(t.created);
+    r.onclick=()=>window.open(t.link,"_blank");
+    r.innerHTML=\`
+      <td>\${t.id}</td>
+      <td>\${t.customer||""}</td>
+      <td>\${t.address||""}</td>
+      <td>\${t.status}</td>
+      <td>\${t.priority||""}</td>
+      <td>\${t.created||""}</td>
+      <td>\${t.completed||""}</td>
+      <td>\${t.sla||""}</td>
+    \`;
+    el.appendChild(r);
+  });
 }
 
 function renderGlobal(){
-const q=document.getElementById("globalsearch").value.toLowerCase();
-const el=document.getElementById("globalrows");
-el.innerHTML="";
-tasksFlat
-.filter(t=>!hiddenAdmins.includes(t.admin))
-.filter(t=>
-(t.customer+"").toLowerCase().includes(q)||
-(t.address||"").toLowerCase().includes(q)||
-(t.title||"").toLowerCase().includes(q)
-)
-.forEach(t=>{
-const r=document.createElement("tr");
-if(t.status==="Pending") r.className=ageColor(t.created);
-r.onclick=()=>window.open(t.link,"_blank");
-r.innerHTML=\`
-<td>\${t.id}</td>
-<td>\${t.customer||""}</td>
-<td>\${t.address||""}</td>
-<td>\${t.status}</td>
-<td>\${t.priority||""}</td>
-<td>\${t.created||""}</td>
-<td>\${t.completed||""}</td>
-<td>\${t.sla||""}</td>
-<td>\${t.admin}</td>
-\`;
-el.appendChild(r);
-});
+  const q=document.getElementById("globalsearch").value.toLowerCase();
+  const el=document.getElementById("globalrows");
+  el.innerHTML="";
+  tasksFlat
+  .filter(t=>!hiddenAdmins.includes(t.admin))
+  .filter(t=>
+    (t.customer+"").toLowerCase().includes(q)||
+    (t.address||"").toLowerCase().includes(q)||
+    (t.title||"").toLowerCase().includes(q)
+  )
+  .forEach(t=>{
+    const r=document.createElement("tr");
+    if(t.status==="Pending") r.className=ageColor(t.created);
+    r.onclick=()=>window.open(t.link,"_blank");
+    r.innerHTML=\`
+      <td>\${t.id}</td>
+      <td>\${t.customer||""}</td>
+      <td>\${t.address||""}</td>
+      <td>\${t.status}</td>
+      <td>\${t.priority||""}</td>
+      <td>\${t.created||""}</td>
+      <td>\${t.completed||""}</td>
+      <td>\${t.sla||""}</td>
+      <td>\${t.admin}</td>
+    \`;
+    el.appendChild(r);
+  });
 }
 
 load();
