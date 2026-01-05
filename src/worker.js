@@ -58,17 +58,6 @@ export default {
       ).bind(JSON.stringify(payload), Date.now()).run();
     }
 
-    function duration(start, end) {
-      if (!start || !end) return "";
-      const s = new Date(start).getTime();
-      const e = new Date(end).getTime();
-      if (!s || !e) return "";
-      const ms = e - s;
-      const d = Math.floor(ms / 86400000);
-      const h = Math.floor((ms % 86400000) / 3600000);
-      return `${d}d ${h}h`;
-    }
-
     async function loadAdmins(env) {
       const res = await splynxFetch(env, "/api/2.0/admin/administration/administrators");
       const list = res.json?.data || res.json || [];
@@ -97,18 +86,6 @@ export default {
         return (s || "").toString().trim().toLowerCase();
       }
 
-      const isPending = s =>
-        [
-          "to do",
-          "to-do",
-          "todo",
-          "in progress",
-          "add work / not completed",
-          "awaiting client",
-          "billing - more info req",
-          "billing - to bill"
-        ].includes(normalize(s));
-
       const isDone = s =>
         ["done", "completed"].includes(normalize(s));
 
@@ -123,10 +100,12 @@ export default {
         if (normalize(status) === "to archive") continue;
         if (String(t.is_archived) === "1") continue;
 
+        if (isDone(status)) continue; // 🚀 ignore done completely
+
         let admin = "Unassigned";
         if (t.assignee) admin = admins[t.assignee] || `Admin #${t.assignee}`;
 
-        if (!grouped[admin]) grouped[admin] = { pending: [], done: [] };
+        if (!grouped[admin]) grouped[admin] = [];
 
         const obj = {
           id: t.id,
@@ -135,16 +114,12 @@ export default {
           title: t.title || "",
           priority: t.priority || "",
           created: t.created_at || t.date_created || "",
-          completed: t.resolved_at || "",
-          status: status,
-          sla: duration(t.created_at, t.resolved_at),
+          status,
           admin,
           link: (env.SPLYNX_URL || "").replace(/\/$/, "") + `/admin/scheduling/tasks/view?id=${t.id}`
         };
 
-        if (isDone(status)) grouped[admin].done.push(obj);
-        else if (isPending(status)) grouped[admin].pending.push(obj);
-
+        grouped[admin].push(obj);
         all.push(obj);
       }
 
@@ -212,14 +187,11 @@ body{font-family:Arial;margin:15px;}
 .header{display:flex;align-items:center;gap:15px;flex-wrap:wrap;}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:10px;}
 .tile{border:1px solid #ccc;border-radius:10px;padding:10px;background:#fafafa}
-.count{font-size:26px;font-weight:bold}
+.count{font-size:28px;font-weight:bold;color:#c00}
 .hidebox{font-size:12px}
 table{width:100%;border-collapse:collapse;margin-top:10px}
 td,th{border-bottom:1px solid #ddd;padding:6px}
 .row{cursor:pointer}
-.badge{font-size:12px;padding:2px 6px;border-radius:6px}
-.status-done{background:#d9fdd3}
-.status-pending{background:#fff5c2}
 #spinner{display:none}
 </style>
 </head>
@@ -237,7 +209,7 @@ td,th{border-bottom:1px solid #ddd;padding:6px}
 
 <div id="tiles" class="tiles"></div>
 
-<h3>All Tasks</h3>
+<h3>All Pending Tasks</h3>
 <input id="search" placeholder="Search client / address / title..." style="width:100%;padding:6px" oninput="renderAll()"/>
 
 <table>
@@ -249,8 +221,6 @@ td,th{border-bottom:1px solid #ddd;padding:6px}
 <th>Status</th>
 <th>Priority</th>
 <th>Created</th>
-<th>Completed</th>
-<th>SLA</th>
 <th>Admin</th>
 </tr>
 </thead>
@@ -279,26 +249,23 @@ function renderTiles(){
   const t=document.getElementById("tiles");
   const s=document.getElementById("summary");
 
-  let tp=0,td=0;
+  let tp=0;
   t.innerHTML="";
   Object.keys(data.grouped).forEach(a=>{
-    const g=data.grouped[a];
-    const pending=g.pending.length;
-    const done=g.done.length;
-    tp+=pending;td+=done;
+    const pending=data.grouped[a].length;
+    tp+=pending;
 
     const d=document.createElement("div");
     d.className="tile";
     d.innerHTML=\`
       <b>\${a}</b><br>
-      <span class="count">\${pending}</span> pending<br>
-      Done: \${done}<br>
+      <span class="count">\${pending}</span><br>
       <label class="hidebox"><input type="checkbox" onchange="toggleHide('\${a}')" /> Hide</label>
     \`;
     t.appendChild(d);
   });
 
-  s.innerHTML=\`<b>Total pending:</b> \${tp} | <b>Done:</b> \${td}\`;
+  s.innerHTML=\`<b>Total pending:</b> \${tp}\`;
 }
 
 function toggleHide(a){
@@ -330,8 +297,6 @@ function renderAll(){
       <td>\${t.status}</td>
       <td>\${t.priority}</td>
       <td>\${t.created}</td>
-      <td>\${t.completed}</td>
-      <td>\${t.sla}</td>
       <td>\${t.admin}</td>
     \`;
     el.appendChild(r);
