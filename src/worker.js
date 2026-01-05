@@ -87,7 +87,8 @@ export default {
 
       for (const t of tasks) {
 
-        if (t.status !== "todo") continue;
+// TEMP disable filter so tiles show
+// if (t.status !== "todo") continue;
 
         const admin =
           t.assigned_to_title ||
