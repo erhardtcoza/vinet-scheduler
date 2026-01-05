@@ -143,6 +143,25 @@ export default {
       return new Response("Invalid", { status: 401 });
     }
 
+  if (url.pathname === "/api/debug/statuses") {
+  const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
+
+  if (!res.ok) {
+    return json({error:true,status:res.status,body:res.text},500);
+  }
+
+  const map = {};
+
+  const tasks = res.json?.data || res.json || [];
+
+  for (const t of tasks) {
+    const s = (t.status_name || "").trim();
+    map[s] = (map[s] || 0) + 1;
+  }
+
+  return json(map);
+}
+
     if (!hasSession(request))
       return Response.redirect(origin + "/login", 302);
 
