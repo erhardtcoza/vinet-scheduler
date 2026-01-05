@@ -15,3 +15,10 @@ SPYLNX_AUTH = "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzB
 binding = "DB"
 database_name = "vinet-scheduler"
 database_id = "07c63b85-70c0-4e2e-835d-9d2adc94c569"
+
+[observability]
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
