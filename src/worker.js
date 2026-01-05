@@ -4,13 +4,13 @@ async fetch(request, env, ctx) {
 const USERNAME="vinet";
 const PASSWORD="Vinet007!";
 const SESSION="vinet_session";
-const AUTO_MS=60*60*1000;
+const AUTO=60*60*1000;
 
 function html(b){return new Response(b,{headers:{"Content-Type":"text/html"}})}
 function json(d,s=200){return new Response(JSON.stringify(d),{status:s,headers:{"Content-Type":"application/json"}})}
-function ipOK(ip){if(!ip)return false;const p=ip.split(".");return p[0]==="160"&&p[1]==="226"&&Number(p[2])>=128&&Number(p[2])<=143}
-function hasSession(r){return(r.headers.get("Cookie")||"").includes(`${SESSION}=1`)}
-async function ip(r){return r.headers.get("CF-Connecting-IP")||null}
+function okIP(ip){if(!ip)return false;const p=ip.split(".");return p[0]==="160"&&p[1]==="226"&&Number(p[2])>=128&&Number(p[2])<=143}
+function logged(r){return(r.headers.get("Cookie")||"").includes(`${SESSION}=1`)}
+async function getIP(r){return r.headers.get("CF-Connecting-IP")||null}
 
 async function api(env,path,opt={}){
  const base=(env.SPLYNX_URL||"").replace(/\/$/,"");
@@ -24,81 +24,80 @@ async function cacheGet(env){
 }
 async function cacheSet(env,payload){
  return env.DB.prepare(`INSERT OR REPLACE INTO task_cache(id,payload,last_updated)VALUES(1,?,?)`)
- .bind(JSON.stringify(payload),Date.now()).run();
+   .bind(JSON.stringify(payload),Date.now()).run();
 }
 
-async function admins(env){
+async function getAdmins(env){
  const r=await api(env,"/api/2.0/admin/administration/administrators");
- const list=r.json?.data||r.json||[];const map={};list.forEach(a=>map[a.id]=a.name||a.login||`Admin #${a.id}`);return map
+ const list=r.json?.data||r.json||[];const map={};
+ list.forEach(a=>map[a.id]=a.name||a.login||`Admin #${a.id}`);
+ return map;
 }
-
-function norm(s){return(s||"").toString().trim().toLowerCase()}
-const TODO_LIST=["to do","in progress","add work / not completed"];
 
 async function load(env,force=false){
 
  const c=await cacheGet(env);
- if(!force&&c&&Date.now()-c.last_updated<AUTO_MS) return{data:JSON.parse(c.payload),last:c.last_updated};
+ if(!force&&c&&Date.now()-c.last_updated<AUTO) return{data:JSON.parse(c.payload),last:c.last_updated};
 
- const a=await admins(env);
+ const admins=await getAdmins(env);
+
  const r=await api(env,"/api/2.0/admin/scheduling/tasks");
  if(!r.ok) throw new Error("Splynx error");
 
  const tasks=r.json?.data||r.json||[];
  const grouped={};
- const all=[];
 
  for(const t of tasks){
 
-  const status=t.status_name||t.workflow_status_name||t.workflow_status||"";
-  const n=norm(status);
+  const ws=t.workflow_status_id;
+  const archived=String(t.is_archived)==="1";
+  const statusName=(t.status_name||"").toLowerCase();
 
-  if(n==="to archive") continue;
-  if(String(t.is_archived)==="1") continue;
+  if(archived) continue;
+  if(statusName==="to archive") continue;
 
   let admin="Unassigned";
-  if(t.assignee) admin=a[t.assignee]||`Admin #${t.assignee}`;
+  if(t.assignee) admin=admins[t.assignee]||`Admin #${t.assignee}`;
   if(!grouped[admin]) grouped[admin]={todo:[],done:[]};
 
   const rec={
-   id:t.id,
-   customer:t.related_customer_id||"",
-   address:t.address||"",
-   title:t.title||"",
-   priority:t.priority||"",
-   created:t.created_at||t.date_created||"",
-   status,
-   admin,
-   link:(env.SPLYNX_URL||"").replace(/\/$/,"")+`/admin/scheduling/tasks/view?id=${t.id}`
+    id:t.id,
+    customer:t.related_customer_id||"",
+    address:t.address||"",
+    title:t.title||"",
+    priority:t.priority||"",
+    created:t.created_at||t.date_created||"",
+    status:t.status_name||t.workflow_status_name||"",
+    admin,
+    link:(env.SPLYNX_URL||"").replace(/\/$/,"")+`/admin/scheduling/tasks/view?id=${t.id}`
   };
 
-  if(TODO_LIST.includes(n)) grouped[admin].todo.push(rec);
+  if(ws===1||ws===2) grouped[admin].todo.push(rec);
   else grouped[admin].done.push(rec);
-
-  all.push(rec);
  }
 
- const payload={grouped,all};
+ const payload={grouped};
  await cacheSet(env,payload);
  return{data:payload,last:Date.now()};
 }
 
 const url=new URL(request.url);
 const origin=url.origin;
-const clientIP=await ip(request);
+const ip=await getIP(request);
 
-if(!ipOK(clientIP)) return html(`<h2>Sorry — this tool is only available inside the Vinet network.</h2>`);
+if(!okIP(ip)) return html(`<h2>Sorry — this tool is only available inside the Vinet network.</h2>`);
 
-if(url.pathname==="/login"&&request.method==="GET"){
- return html(`<h2>Vinet Scheduling Login</h2><form method="POST"><input name="u" placeholder="Username"/><br/><input name="p" type="password" placeholder="Password"/><br/><button>Login</button></form>`);
-}
+if(url.pathname==="/login"&&request.method==="GET")
+ return html(`<h2>Vinet Scheduling Login</h2><form method="POST"><input name="u"/><br/><input name="p" type="password"/><br/><button>Login</button></form>`);
+
 if(url.pathname==="/login"&&request.method==="POST"){
  const f=await request.formData();
  if(f.get("u")===USERNAME&&f.get("p")===PASSWORD)
   return new Response("",{status:302,headers:{"Set-Cookie":`${SESSION}=1; HttpOnly; Secure; Path=/`,"Location":origin+"/"}});
  return new Response("Invalid login",{status:401});
 }
-if(!hasSession(request)) return Response.redirect(origin+"/login",302);
+
+if(!logged(request)) return Response.redirect(origin+"/login",302);
 
 if(url.pathname==="/api/tasks") return json(await load(env,false));
 if(url.pathname==="/api/refresh") return json(await load(env,true));
@@ -107,7 +106,7 @@ return html(UI);
 }
 }
 
-const UI = `
+const UI=`
 <!doctype html>
 <html>
 <head>
@@ -166,7 +165,7 @@ td,th{border-bottom:1px solid #eee;padding:6px}
 
 <script>
 let data={grouped:{}};
-let active="", tab="todo";
+let active="",tab="todo";
 
 async function load(force=false){
  spinner(true);
@@ -197,15 +196,8 @@ function renderTiles(){
  document.getElementById("summary").innerHTML="<b>Total To-Do:</b> "+total;
 }
 
-function openModal(a){
- active=a;
- tab="todo";
- document.getElementById("modal").style.display="flex";
- renderTab();
-}
-
+function openModal(a){active=a;tab="todo";document.getElementById("modal").style.display="flex";renderTab();}
 function closeModal(){document.getElementById("modal").style.display="none";}
-
 function setTab(x){tab=x;renderTab();}
 
 function renderTab(){
@@ -215,11 +207,11 @@ function renderTab(){
 
  const el=document.getElementById("rows");el.innerHTML="";
  (data.grouped[active][tab]||[]).forEach(t=>{
-   const r=document.createElement("tr");
-   r.className="row";
-   r.onclick=()=>window.open(t.link,"_blank");
-   r.innerHTML=\`<td>\${t.id}</td><td>\${t.customer}</td><td>\${t.address}</td><td>\${t.status}</td><td>\${t.priority}</td><td>\${t.created}</td>\`;
-   el.appendChild(r);
+  const r=document.createElement("tr");
+  r.className="row";
+  r.onclick=()=>window.open(t.link,"_blank");
+  r.innerHTML=\`<td>\${t.id}</td><td>\${t.customer}</td><td>\${t.address}</td><td>\${t.status}</td><td>\${t.priority}</td><td>\${t.created}</td>\`;
+  el.appendChild(r);
  });
 }
 
