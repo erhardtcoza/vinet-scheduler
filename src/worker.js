@@ -82,13 +82,17 @@ export default {
       }
 
       const tasks = res.json?.data || res.json || [];
-
       const grouped = {};
 
       for (const t of tasks) {
 
-// TEMP disable filter so tiles show
-// if (t.status !== "todo") continue;
+        // --- REAL TODO FILTER ---
+        const isTodo =
+          String(t.workflow_status_id) === "1" &&
+          String(t.closed) === "0" &&
+          String(t.is_archived) === "0";
+
+        if (!isTodo) continue;
 
         const admin =
           t.assigned_to_title ||
@@ -100,12 +104,11 @@ export default {
         grouped[admin].push({
           id: t.id,
           title: t.title || "",
-          created: t.date_created || "",
-          town: t.address_town || "",
-          type: t.type || "",
-          category: t.category || "",
+          created: t.created_at || t.updated_at || "",
+          town: t.address || "",
+          priority: t.priority || "",
           note: t.description || "",
-          link: (env.SPLYNX_URL || "").replace(/\/$/,"") + `/admin/scheduling/tasks/${t.id}`
+          link: (env.SPLYNX_URL || "").replace(/\/$/, "") + `/admin/scheduling/tasks/${t.id}`
         });
       }
 
@@ -291,8 +294,7 @@ function renderRows(){
     r.innerHTML=\`
       <td>\${t.id}</td>
       <td>\${t.town||""}</td>
-      <td>\${t.type||""}</td>
-      <td>\${t.category||""}</td>
+      <td>\${t.priority||""}</td>
       <td>\${t.title||""}</td>
       <td>\${t.created||""}</td>
       <td>\${t.note||""}</td>\`;
