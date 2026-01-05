@@ -82,10 +82,6 @@ export default {
 
       for (const t of tasks) {
 
-        // skip archived always
-        if (String(t.is_archived) === "1") continue;
-
-        // resolve admin name
         let admin = "Unassigned";
 
         if (t.assignee && adminsMap[t.assignee])
@@ -97,8 +93,9 @@ export default {
 
         if (!grouped[admin]) grouped[admin] = { todo: 0, done: 0 };
 
-        // ---- KEY RULE ----
-        const isDone = !!(t.resolved_at && t.resolved_at !== "");
+        // --------------- KEY RULE ----------------
+        const isDone = String(t.is_archived) === "1";
+        // -----------------------------------------
 
         if (isDone)
           grouped[admin].done++;
@@ -148,7 +145,7 @@ export default {
     if (!hasSession(request))
       return Response.redirect(origin + "/login", 302);
 
-    // debug – keep for now
+    // ---- debug: leave active for now ----
     if (url.pathname === "/api/debug/sample") {
       const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
       const tasks = res.json?.data || res.json || [];
