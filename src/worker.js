@@ -3,7 +3,7 @@ export default {
     const USERNAME = "vinet";
     const PASSWORD = "Vinet007!";
     const SESSION_NAME = "vinet_session";
-    const AUTO_REFRESH_MS = 60 * 60 * 1000;
+    const AUTO_REFRESH_MS = 60 * 60 * 1000; // 1 hour
 
     function html(body) {
       return new Response(body, { headers: { "Content-Type": "text/html" } });
@@ -18,13 +18,8 @@ export default {
 
     function isAllowedIP(ip) {
       if (!ip) return false;
-      const parts = ip.split(".");
-      return (
-        parts[0] === "160" &&
-        parts[1] === "226" &&
-        Number(parts[2]) >= 128 &&
-        Number(parts[2]) <= 143
-      );
+      const p = ip.split(".");
+      return p[0] === "160" && p[1] === "226" && Number(p[2]) >= 128 && Number(p[2]) <= 143;
     }
 
     function hasSession(request) {
@@ -35,15 +30,24 @@ export default {
       return request.headers.get("CF-Connecting-IP") || null;
     }
 
+    // -------------------------------
+    // REAL SCHEDULING API CALL
+    // -------------------------------
     async function fetchSplynx(env) {
-      const res = await fetch(
-        `${env.SPYLNX_URL}/api/2.0/admin/ticketing/tickets`,
-        {
-          headers: { Authorization: env.SPYLNX_AUTH },
-        }
-      );
 
-      if (!res.ok) throw new Error("Splynx failure");
+      // 👇 THIS IS THE CORRECT ENDPOINT
+      const url = `${env.SPYLNX_URL}/api/2.0/admin/scheduling/tasks`;
+
+      const res = await fetch(url, {
+        headers: { Authorization: env.SPYLNX_AUTH }
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        console.error("SPYLNX ERROR", res.status, txt);
+        throw new Error(`Splynx failure ${res.status}`);
+      }
+
       return res.json();
     }
 
@@ -55,43 +59,45 @@ export default {
 
     async function setCache(env, payload) {
       return env.DB.prepare(
-        `
-        INSERT OR REPLACE INTO task_cache (id,payload,last_updated)
-        VALUES (1,?,?)
-      `
-      )
-        .bind(JSON.stringify(payload), Date.now())
-        .run();
+        `INSERT OR REPLACE INTO task_cache (id,payload,last_updated)
+         VALUES (1,?,?)`
+      ).bind(JSON.stringify(payload), Date.now()).run();
     }
 
+    // -------------------------------
+    // LOAD TASKS + CACHE
+    // -------------------------------
     async function loadTasks(env, force = false) {
       const cached = await getCache(env);
 
       if (!force && cached && Date.now() - cached.last_updated < AUTO_REFRESH_MS)
-        return {
-          data: JSON.parse(cached.payload),
-          last: cached.last_updated,
-        };
+        return { data: JSON.parse(cached.payload), last: cached.last_updated };
 
       const api = await fetchSplynx(env);
 
+      // NOTE: API shape normally {data:[...]} — but fallback safely
+      const tasks = api.data || api;
+
       const grouped = {};
 
-      for (const t of api) {
+      for (const t of tasks) {
+
+        // We ONLY care about todo
         if (t.status !== "todo") continue;
 
-        const a = t.assigned_to_name || "Unassigned";
+        const assigned = t.admin_name || t.assigned_to_name || "Unassigned";
 
-        if (!grouped[a]) grouped[a] = [];
-        grouped[a].push({
+        if (!grouped[assigned]) grouped[assigned] = [];
+
+        grouped[assigned].push({
           id: t.id,
-          title: t.subject,
-          created: t.created,
-          town: t.address_town || "",
+          title: t.title || t.subject || "",
+          created: t.date_created || t.created || "",
+          town: t.location || t.address_town || "",
           type: t.type || "",
           category: t.category || "",
-          note: t.description_plain || "",
-          link: `${env.SPYLNX_URL}/admin/ticketing/tickets/${t.id}`,
+          note: t.note || t.description_plain || "",
+          link: `${env.SPYLNX_URL}/admin/scheduling/tasks/${t.id}`
         });
       }
 
@@ -100,22 +106,18 @@ export default {
       return { data: grouped, last: Date.now() };
     }
 
+    // -------------------------------
+    // REQUEST FLOW
+    // -------------------------------
     const url = new URL(request.url);
     const origin = url.origin;
     const ip = await getClientIP(request);
 
-    // ------------------------------------------------
-    // IP restriction
-    // ------------------------------------------------
-    if (!isAllowedIP(ip)) {
-      return html(
-        `<h2>Sorry — this tool is only available inside the Vinet network.</h2>`
-      );
-    }
+    // IP CHECK
+    if (!isAllowedIP(ip))
+      return html(`<h2>Sorry — this tool is only available inside the Vinet network.</h2>`);
 
-    // ------------------------------------------------
-    // LOGIN SCREENS
-    // ------------------------------------------------
+    // LOGIN PAGE
     if (url.pathname === "/login" && request.method === "GET") {
       return html(`
         <h2>Vinet Scheduling Login</h2>
@@ -127,6 +129,7 @@ export default {
       `);
     }
 
+    // LOGIN SUBMIT
     if (url.pathname === "/login" && request.method === "POST") {
       const f = await request.formData();
       if (f.get("u") === USERNAME && f.get("p") === PASSWORD) {
@@ -134,37 +137,28 @@ export default {
           status: 302,
           headers: {
             "Set-Cookie": `${SESSION_NAME}=1; HttpOnly; Secure; Path=/`,
-            "Location": origin + "/",
-          },
+            "Location": origin + "/"
+          }
         });
       }
       return new Response("Invalid login", { status: 401 });
     }
 
-    // ------------------------------------------------
-    // REQUIRE LOGIN
-    // ------------------------------------------------
-    if (!hasSession(request)) {
+    // AUTH GUARD
+    if (!hasSession(request))
       return Response.redirect(origin + "/login", 302);
-    }
 
-    // ------------------------------------------------
-    // API ENDPOINTS
-    // ------------------------------------------------
-    if (url.pathname === "/api/tasks") {
+    // API
+    if (url.pathname === "/api/tasks")
       return json(await loadTasks(env, false));
-    }
 
-    if (url.pathname === "/api/refresh") {
+    if (url.pathname === "/api/refresh")
       return json(await loadTasks(env, true));
-    }
 
-    // ------------------------------------------------
-    // MAIN UI
-    // ------------------------------------------------
+    // UI
     return html(UI_HTML);
-  },
-};
+  }
+}
 
 const UI_HTML = `
 <!doctype html>
@@ -211,17 +205,17 @@ body{font-family:Arial;margin:20px;}
 </div>
 
 <script>
-let data = {};
-let activeUser = "";
-let tasks = [];
-let sortPref = {};
+let data={};
+let activeUser="";
+let tasks=[];
+let sortPref={};
 
 async function load(force=false){
   document.getElementById("spinner").style.display="inline";
-  const res = await fetch(force?"/api/refresh":"/api/tasks");
-  const j = await res.json();
-  data = j.data;
-  document.getElementById("last").innerText =
+  const res=await fetch(force?"/api/refresh":"/api/tasks");
+  const j=await res.json();
+  data=j.data;
+  document.getElementById("last").innerText=
     "Last updated: "+new Date(j.last).toLocaleString();
   renderTiles();
   document.getElementById("spinner").style.display="none";
@@ -230,10 +224,10 @@ async function load(force=false){
 function refresh(){ load(true); }
 
 function renderTiles(){
-  const t = document.getElementById("tiles");
+  const t=document.getElementById("tiles");
   t.innerHTML="";
   Object.keys(data).forEach(user=>{
-    const c = data[user].length;
+    const c=data[user].length;
     if(c===0) return;
     const d=document.createElement("div");
     d.className="tile";
@@ -252,9 +246,7 @@ function openModal(user){
   document.getElementById("modal").style.display="flex";
 }
 
-function closeModal(){
-  document.getElementById("modal").style.display="none";
-}
+function closeModal(){ document.getElementById("modal").style.display="none"; }
 
 function ageColor(d){
   const days=(Date.now()-new Date(d))/86400000;
@@ -267,8 +259,8 @@ function renderRows(){
   const q=document.getElementById("search").value.toLowerCase();
   const s=document.getElementById("sort").value;
   let arr=tasks.filter(t=>
-    (t.title||"").toLowerCase().includes(q) ||
-    (t.town||"").toLowerCase().includes(q) ||
+    (t.title||"").toLowerCase().includes(q)||
+    (t.town||"").toLowerCase().includes(q)||
     (t.id+"").includes(q)
   );
 
@@ -296,8 +288,7 @@ function renderRows(){
       <td>\${t.category||""}</td>
       <td>\${t.title||""}</td>
       <td>\${t.created||""}</td>
-      <td>\${t.note||""}</td>
-    \`;
+      <td>\${t.note||""}</td>\`;
     el.appendChild(r);
   });
 }
