@@ -59,11 +59,10 @@ export default {
     async function load(env, force = false) {
 
       const cached = await getCache(env);
-
       if (!force && cached && Date.now() - cached.last_updated < AUTO_REFRESH_MS)
         return { data: JSON.parse(cached.payload), last: cached.last_updated };
 
-      // ---- fetch admins & build map ----
+      // ---- fetch admins ----
       const adminsMap = {};
       {
         const r = await splynxFetch(env, "/api/2.0/admin/administration/administrators");
@@ -83,10 +82,10 @@ export default {
 
       for (const t of tasks) {
 
-        // skip archived items
+        // skip archived always
         if (String(t.is_archived) === "1") continue;
 
-        // ----- resolve admin -----
+        // resolve admin name
         let admin = "Unassigned";
 
         if (t.assignee && adminsMap[t.assignee])
@@ -98,10 +97,10 @@ export default {
 
         if (!grouped[admin]) grouped[admin] = { todo: 0, done: 0 };
 
-        // ----- TEMP: treat EVERYTHING as todo unless status truly equals 'done' -----
-        const statusRaw = (t.status_name || "").toLowerCase();
+        // ---- KEY RULE ----
+        const isDone = !!(t.resolved_at && t.resolved_at !== "");
 
-        if (statusRaw === "done")
+        if (isDone)
           grouped[admin].done++;
         else
           grouped[admin].todo++;
@@ -112,17 +111,15 @@ export default {
       return { data: grouped, last: Date.now() };
     }
 
-    // ------------------ ROUTING ------------------
+    // ---------------- ROUTING ----------------
 
     const url = new URL(request.url);
     const origin = url.origin;
     const ip = await getIP(request);
 
-    // IP restriction
     if (!isAllowedIP(ip))
       return html(`<h2>Sorry — this tool is only available inside the Vinet network.</h2>`);
 
-    // Login page
     if (url.pathname === "/login" && request.method === "GET") {
       return html(`
         <h2>Vinet Scheduling Login</h2>
@@ -134,7 +131,6 @@ export default {
       `);
     }
 
-    // Login submit
     if (url.pathname === "/login" && request.method === "POST") {
       const f = await request.formData();
       if (f.get("u") === USERNAME && f.get("p") === PASSWORD) {
@@ -149,52 +145,27 @@ export default {
       return new Response("Invalid", { status: 401 });
     }
 
-    // Require login
     if (!hasSession(request))
       return Response.redirect(origin + "/login", 302);
 
-    // ------------- DEBUG: SHOW STATUS DATA -------------
-    if (url.pathname === "/api/debug/statuses") {
-      const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
-
-      if (!res.ok)
-        return json({error:true,status:res.status,body:res.text},500);
-
-      const out = {};
-      const tasks = res.json?.data || res.json || [];
-
-      for (const t of tasks) {
-
-        const id = t.workflow_status_id ?? "null";
-
-        const label =
-          t?.workflow_status?.name ||
-          t?.workflow_status?.title ||
-          t?.workflow_status?.label ||
-          t.status_name ||
-          "";
-
-        const key = `${id} | ${label}`;
-
-        out[key] = (out[key] || 0) + 1;
-      }
-
-      return json(out);
-    }
-
-    // ------------- DEBUG: DUMP 5 RAW TASKS -------------
+    // debug – keep for now
     if (url.pathname === "/api/debug/sample") {
       const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
-
-      if (!res.ok)
-        return json({error:true,status:res.status,body:res.text},500);
-
       const tasks = res.json?.data || res.json || [];
-
       return json(tasks.slice(0,5));
     }
 
-    // API routes
+    if (url.pathname === "/api/debug/statuses") {
+      const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
+      const tasks = res.json?.data || res.json || [];
+      const map = {};
+      for (const t of tasks) {
+        const key = t.workflow_status_id;
+        map[key] = (map[key] || 0) + 1;
+      }
+      return json(map);
+    }
+
     if (url.pathname === "/api/tasks")
       return json(await load(env, false));
 
