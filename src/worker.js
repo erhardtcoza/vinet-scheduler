@@ -9,7 +9,7 @@ export default {
     const ADMIN_CACHE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
     function html(body) {
-      return new Response(body, { headers: { "Content-Type": "text/html" } });
+      return new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8" } });
     }
 
     function json(data, status = 200) {
@@ -33,9 +33,6 @@ export default {
       return request.headers.get("CF-Connecting-IP") || null;
     }
 
-    // -------------------------------
-    // Splynx fetch helper
-    // -------------------------------
     async function splynxFetch(env, path, opt = {}) {
       const base = (env.SPLYNX_URL || "").replace(/\/$/, "");
       const headers = {
@@ -53,9 +50,6 @@ export default {
       return { ok: r.ok, status: r.status, json: j, text: t };
     }
 
-    // -------------------------------
-    // CACHE HELPERS — TASKS (id=1)
-    // -------------------------------
     async function getCache(env) {
       return env.DB.prepare(
         "SELECT payload,last_updated FROM task_cache WHERE id=1"
@@ -69,9 +63,6 @@ export default {
       ).bind(JSON.stringify(payload), Date.now()).run();
     }
 
-    // -------------------------------
-    // CACHE HELPERS — ADMINS (id=2)
-    // -------------------------------
     async function getAdminCache(env) {
       return env.DB.prepare(
         "SELECT payload,last_updated FROM task_cache WHERE id=2"
@@ -85,9 +76,6 @@ export default {
       ).bind(JSON.stringify(payload), Date.now()).run();
     }
 
-    // -------------------------------
-    // LOAD ADMINS (CACHE 24H)
-    // -------------------------------
     async function loadAdmins(env) {
 
       const cached = await getAdminCache(env);
@@ -97,26 +85,18 @@ export default {
 
       const res = await splynxFetch(env, "/api/2.0/admin/administration/administrators");
 
-      if (!res.ok) {
-        console.error("ADMIN API ERROR", res.status, res.text);
-        throw new Error("Admin load failed");
-      }
+      if (!res.ok) throw new Error("Admin load failed");
 
       const admins = res.json?.data || res.json || [];
 
       const map = {};
-      for (const a of admins) {
-        map[a.id] = a.name || a.login || `Admin #${a.id}`;
-      }
+      for (const a of admins) map[a.id] = a.name || a.login || `Admin #${a.id}`;
 
       await setAdminCache(env, map);
 
       return map;
     }
 
-    // -------------------------------
-    // LOAD TASKS (CACHE 1H)
-    // -------------------------------
     async function loadTasks(env, force = false) {
 
       const cached = await getCache(env);
@@ -126,10 +106,7 @@ export default {
 
       const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
 
-      if (!res.ok) {
-        console.error("SPYLNX ERROR", res.status, res.text);
-        throw new Error(`Splynx failure ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`Splynx failure ${res.status}`);
 
       const tasks = res.json?.data || res.json || [];
       const admins = await loadAdmins(env);
@@ -147,9 +124,7 @@ export default {
 
         let admin = "Unassigned";
 
-        if (t.assignee) {
-          admin = admins[t.assignee] || `Admin #${t.assignee}`;
-        }
+        if (t.assignee) admin = admins[t.assignee] || `Admin #${t.assignee}`;
 
         if (!grouped[admin]) grouped[admin] = [];
 
@@ -160,7 +135,8 @@ export default {
           town: t.address || "",
           priority: t.priority || "",
           note: t.description || "",
-          link: (env.SPLYNX_URL || "").replace(/\/$/, "") + `/admin/scheduling/tasks/${t.id}`
+          customer: t.related_customer_id || "",
+          link: (env.SPLYNX_URL || "").replace(/\/$/,"") + `/admin/scheduling/tasks/view?id=${t.id}`
         });
       }
 
@@ -169,9 +145,6 @@ export default {
       return { data: grouped, last: Date.now() };
     }
 
-    // -------------------------------
-    // REQUEST FLOW
-    // -------------------------------
     const url = new URL(request.url);
     const origin = url.origin;
     const ip = await getClientIP(request);
@@ -220,31 +193,75 @@ export default {
 const UI_HTML = `<!doctype html>
 <html>
 <head>
+<meta charset="UTF-8">
 <title>Vinet Scheduling</title>
 <style>
-body{font-family:Arial;margin:20px;}
-.header{display:flex;align-items:center;gap:20px;}
-.tiles{display:grid;grid-template-columns:repeat(auto-fill,260px);gap:15px;margin-top:20px;}
-.tile{border:1px solid #ccc;padding:15px;border-radius:8px;cursor:pointer;}
-.count{font-size:34px;font-weight:bold;}
-.modal{position:fixed;top:0;left:0;right:0;bottom:0;display:none;background:#0007;align-items:center;justify-content:center;}
-.modal-content{background:#fff;padding:20px;border-radius:10px;max-height:90vh;width:80%;overflow:auto;}
+body{font-family:Arial;margin:10px;max-width:1300px;margin-left:auto;margin-right:auto;background:#fafafa;}
+.header{display:flex;align-items:center;gap:15px;background:#fff;padding:10px 15px;border-radius:10px;border:1px solid #ddd;}
+.header img{height:40px;}
+.header h2{margin:0;color:#c00000;}
+button{background:#c00000;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;}
+button:hover{background:#900;}
+.summary{margin-top:10px;font-weight:bold;}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-top:10px;}
+.tile{border:1px solid #ddd;padding:12px;border-radius:10px;background:#fff;cursor:grab;display:flex;flex-direction:column;justify-content:space-between;}
+.tile.hidden{opacity:0.3;}
+.tile .count{font-size:28px;font-weight:bold;color:#c00000;}
+.hidebox{margin-top:6px;font-size:12px;}
+.section{margin-top:20px;}
+table{width:100%;border-collapse:collapse;font-size:13px;background:#fff;}
+td,th{border:1px solid #ddd;padding:6px;}
+th{background:#f5f5f5;}
+.modal{position:fixed;top:0;left:0;right:0;bottom:0;display:none;background:#0007;align-items:center;justify-content:center;z-index:10;}
+.modal-content{background:#fff;padding:20px;border-radius:10px;max-height:90vh;width:90%;overflow:auto;}
 .row-green{background:#e5f8e5;}
-.row-yellow{background:#fff9da;}
-.row-red{background:#ffe5e5;}
+.row-yellow{background:#fff7cf;}
+.row-red{background:#ffdede;}
 #spinner{display:none;}
+.searchbox{margin-top:10px;display:flex;gap:8px;}
+@media(max-width:700px){
+  .tiles{grid-template-columns:repeat(2,1fr);}
+  .header{flex-wrap:wrap;}
+}
 </style>
 </head>
 <body>
 
 <div class="header">
+  <img src="https://static.vinet.co.za/logo.jpeg">
   <h2>Vinet Scheduling</h2>
   <button onclick="refresh()">Refresh</button>
   <span id="last"></span>
-  <span id="spinner">Loading…</span>
+  <span id="spinner">Loading...</span>
 </div>
 
+<div class="summary" id="summary"></div>
+
+<h3>Workload per Administrator</h3>
 <div id="tiles" class="tiles"></div>
+
+<div class="section">
+  <h3>All To-Do Tasks</h3>
+
+  <div class="searchbox">
+    <input id="globalsearch" placeholder="Search client code, title, town..." style="flex:1" oninput="renderGlobal()">
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Client Code</th>
+        <th>Town</th>
+        <th>Priority</th>
+        <th>Title</th>
+        <th>Created</th>
+        <th>Admin</th>
+      </tr>
+    </thead>
+    <tbody id="globalrows"></tbody>
+  </table>
+</div>
 
 <div id="modal" class="modal">
   <div class="modal-content">
@@ -262,35 +279,97 @@ body{font-family:Arial;margin:20px;}
 
 <script>
 let data={};
+let tasksFlat=[];
 let activeUser="";
 let tasks=[];
 let sortPref={};
+let hiddenAdmins=JSON.parse(localStorage.getItem("hiddenAdmins")||"[]");
+let order=JSON.parse(localStorage.getItem("tileOrder")||"[]");
 
 async function load(force=false){
   document.getElementById("spinner").style.display="inline";
   const res=await fetch(force?"/api/refresh":"/api/tasks");
   const j=await res.json();
   data=j.data;
-  document.getElementById("last").innerText=
-    "Last updated: "+new Date(j.last).toLocaleString();
+  buildFlat();
   renderTiles();
+  renderGlobal();
+  document.getElementById("summary").innerText="Total tasks: "+tasksFlat.length;
+  document.getElementById("last").innerText="Last updated: "+new Date(j.last).toLocaleString();
   document.getElementById("spinner").style.display="none";
 }
 
 function refresh(){ load(true); }
 
+function buildFlat(){
+  tasksFlat=[];
+  Object.keys(data).forEach(a=>{
+    data[a].forEach(t=>{
+      tasksFlat.push({...t,admin:a});
+    });
+  });
+}
+
+function orderedAdmins(){
+  const admins=Object.keys(data).filter(a=>data[a].length);
+  const set=new Set(order);
+  const existing=order.filter(a=>admins.includes(a));
+  const missing=admins.filter(a=>!set.has(a));
+  return [...existing,...missing];
+}
+
 function renderTiles(){
   const t=document.getElementById("tiles");
   t.innerHTML="";
-  Object.keys(data).forEach(user=>{
+  const admins=orderedAdmins();
+
+  admins.forEach(user=>{
     const c=data[user].length;
     if(c===0) return;
     const d=document.createElement("div");
     d.className="tile";
-    d.innerHTML=\`<b>\${user}</b><div class="count">\${c}</div>\`;
-    d.onclick=()=>openModal(user);
+    if(hiddenAdmins.includes(user)) d.classList.add("hidden");
+    d.draggable=true;
+
+    d.innerHTML=\`
+      <b>\${user}</b>
+      <div class="count">\${c}</div>
+      <label class="hidebox">
+        <input type="checkbox" \${hiddenAdmins.includes(user)?"checked":""} onclick="toggleHide(event,'\${user}')"> Hide
+      </label>
+    \`;
+
+    d.onclick=(e)=>{ if(e.target.tagName!=='INPUT') openModal(user); };
+
+    d.addEventListener("dragstart",e=>{e.dataTransfer.setData("admin",user);});
+    d.addEventListener("dragover",e=>e.preventDefault());
+    d.addEventListener("drop",e=>{
+      e.preventDefault();
+      const from=e.dataTransfer.getData("admin");
+      moveAdmin(from,user);
+    });
+
     t.appendChild(d);
   });
+}
+
+function toggleHide(e,user){
+  e.stopPropagation();
+  if(hiddenAdmins.includes(user)) hiddenAdmins=hiddenAdmins.filter(a=>a!==user);
+  else hiddenAdmins.push(user);
+  localStorage.setItem("hiddenAdmins",JSON.stringify(hiddenAdmins));
+  renderTiles();
+  renderGlobal();
+}
+
+function moveAdmin(from,to){
+  order=orderedAdmins();
+  const fi=order.indexOf(from);
+  const ti=order.indexOf(to);
+  order.splice(fi,1);
+  order.splice(ti,0,from);
+  localStorage.setItem("tileOrder",JSON.stringify(order));
+  renderTiles();
 }
 
 function openModal(user){
@@ -317,6 +396,7 @@ function renderRows(){
   let arr=tasks.filter(t=>
     (t.title||"").toLowerCase().includes(q)||
     (t.town||"").toLowerCase().includes(q)||
+    (t.customer||"").toLowerCase().includes(q)||
     (t.id+"").includes(q)
   );
 
@@ -327,7 +407,6 @@ function renderRows(){
       return pa-pb;
     });
   }
-
   if(s==="town") arr.sort((a,b)=>(a.town||"").localeCompare(b.town||""));
   if(s==="date") arr.sort((a,b)=>new Date(b.created)-new Date(a.created));
 
@@ -339,6 +418,7 @@ function renderRows(){
     r.onclick=()=>window.open(t.link,"_blank");
     r.innerHTML=\`
       <td>\${t.id}</td>
+      <td>\${t.customer||""}</td>
       <td>\${t.town||""}</td>
       <td>\${t.priority||""}</td>
       <td>\${t.title||""}</td>
@@ -348,11 +428,38 @@ function renderRows(){
   });
 }
 
+function renderGlobal(){
+  const q=document.getElementById("globalsearch").value.toLowerCase();
+  const el=document.getElementById("globalrows");
+  el.innerHTML="";
+  tasksFlat
+    .filter(t=>!hiddenAdmins.includes(t.admin))
+    .filter(t=>
+      (t.customer||"").toLowerCase().includes(q)||
+      (t.title||"").toLowerCase().includes(q)||
+      (t.town||"").toLowerCase().includes(q)
+    )
+    .forEach(t=>{
+      const r=document.createElement("tr");
+      r.className=ageColor(t.created);
+      r.onclick=()=>window.open(t.link,"_blank");
+      r.innerHTML=\`
+        <td>\${t.id}</td>
+        <td>\${t.customer||""}</td>
+        <td>\${t.town||""}</td>
+        <td>\${t.priority||""}</td>
+        <td>\${t.title||""}</td>
+        <td>\${t.created||""}</td>
+        <td>\${t.admin||""}</td>
+      \`;
+      el.appendChild(r);
+    });
+}
+
 function saveSort(){
   sortPref[activeUser]=document.getElementById("sort").value;
   localStorage.setItem("sortPref",JSON.stringify(sortPref));
 }
-
 function loadSort(){
   sortPref=JSON.parse(localStorage.getItem("sortPref")||"{}");
   document.getElementById("sort").value=sortPref[activeUser]||"priority";
