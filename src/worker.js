@@ -4,7 +4,7 @@ export default {
     const USERNAME = "vinet";
     const PASSWORD = "Vinet007!";
     const SESSION_NAME = "vinet_session";
-    const AUTO_REFRESH_MS = 60 * 60 * 1000; // 1 hour
+    const AUTO_REFRESH_MS = 60 * 60 * 1000;
 
     function html(body) {
       return new Response(body, { headers: { "Content-Type": "text/html" } });
@@ -91,18 +91,22 @@ export default {
 
         const isDone = !!(t.resolved_at && t.resolved_at !== "0000-00-00 00:00:00");
 
+        const taskObj = {
+          id: t.id,
+          title: t.title || "",
+          customer: t.related_customer_id || "",
+          address: t.address || "",
+          created: t.created_at || "",
+          resolved: t.resolved_at || "",
+          admin: adminName,
+          link: (env.SPLYNX_URL || "").replace(/\/$/, "") +
+                `/admin/scheduling/tasks/view?id=${t.id}`
+        };
+
         if (isDone) grouped[adminName].done++;
         else {
           grouped[adminName].todo++;
-          grouped[adminName].todoList.push({
-            id: t.id,
-            title: t.title || "",
-            customer: t.related_customer_id || "",
-            address: t.address || "",
-            created: t.created_at || "",
-            link: (env.SPLYNX_URL || "").replace(/\/$/, "") +
-                  `/admin/scheduling/tasks/view?id=${t.id}`
-          });
+          grouped[adminName].todoList.push(taskObj);
         }
       }
 
@@ -160,28 +164,67 @@ const UI_HTML = `<!doctype html>
 <head>
 <title>Vinet Scheduling</title>
 <style>
+
 body{font-family:Arial;margin:20px;}
+
 .header{display:flex;align-items:center;gap:20px;}
-.tiles{display:grid;grid-template-columns:repeat(auto-fill,260px);gap:15px;margin-top:20px;}
-.tile{border:1px solid #ccc;padding:15px;border-radius:8px;cursor:pointer;background:#fafafa;}
+
+.logo{height:40px;}
+
+.brand{color:#b30000;font-weight:bold;font-size:20px;}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,260px);gap:15px;margin-top:10px;}
+
+.tile{border:1px solid #ddd;padding:15px;border-radius:10px;cursor:pointer;background:#fafafa;}
+
 .count{font-size:34px;font-weight:bold;color:#c40000;}
+
 .done{font-size:14px;color:#008000;}
-.modal,.loading{position:fixed;top:0;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;background:#0007;z-index:99;}
-.modal-content{background:#fff;padding:20px;border-radius:10px;max-height:90vh;width:85%;overflow:auto;}
-#rows td{padding:6px;border-bottom:1px solid #eee;}
+
+.loading,.modal{position:fixed;top:0;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;background:#0006;z-index:99;}
+
+.modal-content{background:#fff;padding:20px;border-radius:10px;max-height:90vh;width:90%;overflow:auto;}
+
+#rows td,#allrows td{padding:6px;border-bottom:1px solid #eee;}
+
+.search{margin-top:25px;margin-bottom:8px;}
+
+th{cursor:pointer;text-align:left;border-bottom:2px solid #ccc;padding:6px;}
+
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h2>Vinet Scheduling</h2>
+  <img class="logo" src="https://static.vinet.co.za/logo.jpeg">
+  <span class="brand">Vinet Scheduling</span>
   <button onclick="refresh()">Refresh</button>
   <span id="last"></span>
 </div>
 
-<div class="loading" id="loading"><div style="background:white;padding:20px;border-radius:10px;">Loading...</div></div>
+<div class="loading" id="loading">
+  <div style="background:white;padding:20px;border-radius:12px;">Loading...</div>
+</div>
 
 <div id="tiles" class="tiles"></div>
+
+<div class="search">
+  <input id="search" placeholder="Search client code / address / title..." style="width:300px;" oninput="renderAllRows()">
+</div>
+
+<table id="allrows" width="100%">
+  <thead>
+    <tr>
+      <th onclick="setSort('id')">ID</th>
+      <th onclick="setSort('customer')">Client Code</th>
+      <th onclick="setSort('address')">Address</th>
+      <th onclick="setSort('created')">Created</th>
+      <th onclick="setSort('admin')">Admin</th>
+      <th onclick="setSort('title')">Title</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
 
 <div id="modal" class="modal">
   <div class="modal-content">
@@ -192,16 +235,22 @@ body{font-family:Arial;margin:20px;}
 </div>
 
 <script>
+
 let data={};
-let tasks=[];
+let all=[];
+let sortField='created';
+let sortDir='asc';
 
 async function load(force=false){
   document.getElementById("loading").style.display="flex";
   const res=await fetch(force?"/api/refresh":"/api/tasks");
   const j=await res.json();
   data=j.data;
+  all=[];
+  Object.values(data).forEach(a=>a.todoList.forEach(t=>all.push(t)));
   document.getElementById("last").innerText="Last updated: "+new Date(j.last).toLocaleString();
   renderTiles();
+  renderAllRows();
   document.getElementById("loading").style.display="none";
 }
 
@@ -221,6 +270,42 @@ function renderTiles(){
   });
 }
 
+function setSort(f){
+  if(f===sortField) sortDir=sortDir==='asc'?'desc':'asc';
+  else{sortField=f;sortDir='asc';}
+  renderAllRows();
+}
+
+function renderAllRows(){
+  const q=document.getElementById("search").value.toLowerCase();
+  let arr=all.filter(t=>
+    (t.customer+'').toLowerCase().includes(q) ||
+    (t.address||'').toLowerCase().includes(q) ||
+    (t.title||'').toLowerCase().includes(q)
+  );
+
+  arr.sort((a,b)=>{
+    let av=a[sortField]||'', bv=b[sortField]||'';
+    if(sortField==='id') {av=+av;bv=+bv;}
+    return sortDir==='asc'?(av>bv?1:-1):(av<bv?1:-1);
+  });
+
+  const el=document.querySelector("#allrows tbody");
+  el.innerHTML="";
+  arr.forEach(t=>{
+    const r=document.createElement("tr");
+    r.onclick=()=>window.open(t.link,"_blank");
+    r.innerHTML=\`
+      <td>\${t.id}</td>
+      <td>\${t.customer}</td>
+      <td>\${t.address}</td>
+      <td>\${t.created}</td>
+      <td>\${t.admin}</td>
+      <td>\${t.title}</td>\`;
+    el.appendChild(r);
+  });
+}
+
 function openModal(admin){
   tasks=data[admin].todoList;
   document.getElementById("mtitle").innerText=\`\${admin} — To-Do Tasks (\${tasks.length})\`;
@@ -234,8 +319,7 @@ function openModal(admin){
       <td>\${t.customer}</td>
       <td>\${t.address}</td>
       <td>\${t.created}</td>
-      <td>\${t.title}</td>
-    \`;
+      <td>\${t.title}</td>\`;
     el.appendChild(r);
   });
   document.getElementById("modal").style.display="flex";
@@ -246,6 +330,7 @@ function closeModal(){
 }
 
 load();
+
 </script>
 
 </body>
