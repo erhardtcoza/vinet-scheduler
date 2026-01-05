@@ -42,10 +42,8 @@ export default {
 
       const r = await fetch(base + path, { ...opt, headers });
       const t = await r.text();
-
       let j = null;
       try { j = JSON.parse(t); } catch {}
-
       return { ok: r.ok, status: r.status, json: j, text: t };
     }
 
@@ -63,55 +61,52 @@ export default {
     }
 
     async function loadTasks(env, force = false) {
-      const cached = await getCache(env);
 
+      const cached = await getCache(env);
       if (!force && cached && Date.now() - cached.last_updated < AUTO_REFRESH_MS)
         return { data: JSON.parse(cached.payload), last: cached.last_updated };
 
-      const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
+      const admins = await splynxFetch(env, "/api/2.0/admin/administration/administrators");
+      const adminMap = { 0: "Unassigned" };
 
-      if (!res.ok) {
-        console.error("SPYLNX ERROR", res.status, res.text);
-        throw new Error(`Splynx failure ${res.status}`);
+      if (admins.ok) {
+        const list = admins.json?.data || admins.json || [];
+        for (const a of list) adminMap[a.id] = a.name || a.login || `Admin ${a.id}`;
       }
 
-      const tasks = res.json?.data || res.json || [];
+      const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
+      if (!res.ok) throw new Error("Splynx failed");
 
+      const tasks = res.json?.data || res.json || [];
       const grouped = {};
 
       for (const t of tasks) {
 
-        // ignore archived
         if (String(t.is_archived) === "1") continue;
 
-        // resolve admin name
-        let admin = "Unassigned";
-        if (t.assignee && t.assignee !== 0) admin = "Admin " + t.assignee;
+        const adminName = adminMap[t.assignee] || `Admin ${t.assignee || 0}`;
 
-        if (!grouped[admin]) {
-          grouped[admin] = { todo: 0, done: 0, list: [] };
-        }
+        if (!grouped[adminName])
+          grouped[adminName] = { todo: 0, done: 0, todoList: [] };
 
         const isDone = !!(t.resolved_at && t.resolved_at !== "0000-00-00 00:00:00");
 
-        if (isDone) grouped[admin].done++;
-        else grouped[admin].todo++;
-
-        grouped[admin].list.push({
-          id: t.id,
-          title: t.title || "",
-          address: t.address || "",
-          created: t.created_at || "",
-          resolved: t.resolved_at || "",
-          customer: t.related_customer_id || "",
-          note: t.description || "",
-          link: (env.SPLYNX_URL || "").replace(/\/$/, "") +
-                `/admin/scheduling/tasks/view?id=${t.id}`
-        });
+        if (isDone) grouped[adminName].done++;
+        else {
+          grouped[adminName].todo++;
+          grouped[adminName].todoList.push({
+            id: t.id,
+            title: t.title || "",
+            customer: t.related_customer_id || "",
+            address: t.address || "",
+            created: t.created_at || "",
+            link: (env.SPLYNX_URL || "").replace(/\/$/, "") +
+                  `/admin/scheduling/tasks/view?id=${t.id}`
+          });
+        }
       }
 
       await setCache(env, grouped);
-
       return { data: grouped, last: Date.now() };
     }
 
@@ -168,15 +163,12 @@ const UI_HTML = `<!doctype html>
 body{font-family:Arial;margin:20px;}
 .header{display:flex;align-items:center;gap:20px;}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,260px);gap:15px;margin-top:20px;}
-.tile{border:1px solid #ccc;padding:15px;border-radius:8px;cursor:pointer;background:#f9f9f9;}
+.tile{border:1px solid #ccc;padding:15px;border-radius:8px;cursor:pointer;background:#fafafa;}
 .count{font-size:34px;font-weight:bold;color:#c40000;}
 .done{font-size:14px;color:#008000;}
-.modal{position:fixed;top:0;left:0;right:0;bottom:0;display:none;background:#0007;align-items:center;justify-content:center;}
+.modal,.loading{position:fixed;top:0;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;background:#0007;z-index:99;}
 .modal-content{background:#fff;padding:20px;border-radius:10px;max-height:90vh;width:85%;overflow:auto;}
-.row-green{background:#e5f8e5;}
-.row-yellow{background:#fff9da;}
-.row-red{background:#ffe5e5;}
-#spinner{display:none;}
+#rows td{padding:6px;border-bottom:1px solid #eee;}
 </style>
 </head>
 <body>
@@ -185,8 +177,9 @@ body{font-family:Arial;margin:20px;}
   <h2>Vinet Scheduling</h2>
   <button onclick="refresh()">Refresh</button>
   <span id="last"></span>
-  <span id="spinner">Loading…</span>
 </div>
+
+<div class="loading" id="loading"><div style="background:white;padding:20px;border-radius:10px;">Loading...</div></div>
 
 <div id="tiles" class="tiles"></div>
 
@@ -200,17 +193,16 @@ body{font-family:Arial;margin:20px;}
 
 <script>
 let data={};
-let active="";
 let tasks=[];
 
 async function load(force=false){
-  document.getElementById("spinner").style.display="inline";
+  document.getElementById("loading").style.display="flex";
   const res=await fetch(force?"/api/refresh":"/api/tasks");
   const j=await res.json();
   data=j.data;
   document.getElementById("last").innerText="Last updated: "+new Date(j.last).toLocaleString();
   renderTiles();
-  document.getElementById("spinner").style.display="none";
+  document.getElementById("loading").style.display="none";
 }
 
 function refresh(){ load(true); }
@@ -219,21 +211,19 @@ function renderTiles(){
   const t=document.getElementById("tiles");
   t.innerHTML="";
   Object.keys(data).forEach(admin=>{
-    const obj=data[admin];
     const d=document.createElement("div");
     d.className="tile";
     d.innerHTML=\`<b>\${admin}</b>
-      <div class="count">\${obj.todo}</div>
-      <div class="done">Done: \${obj.done}</div>\`;
+      <div class="count">\${data[admin].todo}</div>
+      <div class="done">Done: \${data[admin].done}</div>\`;
     d.onclick=()=>openModal(admin);
     t.appendChild(d);
   });
 }
 
 function openModal(admin){
-  active=admin;
-  tasks=data[admin].list;
-  document.getElementById("mtitle").innerText=\`\${admin} — Tasks (\${tasks.length})\`;
+  tasks=data[admin].todoList;
+  document.getElementById("mtitle").innerText=\`\${admin} — To-Do Tasks (\${tasks.length})\`;
   const el=document.getElementById("rows");
   el.innerHTML="";
   tasks.forEach(t=>{
@@ -244,7 +234,6 @@ function openModal(admin){
       <td>\${t.customer}</td>
       <td>\${t.address}</td>
       <td>\${t.created}</td>
-      <td>\${t.resolved||""}</td>
       <td>\${t.title}</td>
     \`;
     el.appendChild(r);
