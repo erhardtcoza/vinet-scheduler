@@ -8,8 +8,8 @@ routes = [
 ]
 
 [vars]
-SPYLNX_URL = "https://splynx.vinet.co.za"
-SPYLNX_AUTH = "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE="
+SPLYNX_URL = "https://splynx.vinet.co.za"
+AUTH_HEADER = "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE="
 
 [[d1_databases]]
 binding = "DB"
