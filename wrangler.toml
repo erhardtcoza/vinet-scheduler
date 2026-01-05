@@ -1,0 +1,17 @@
+name = "vinet-scheduler"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+workers_dev = false
+
+routes = [
+  { pattern = "scheduler.vinet.co.za/*", zone_name = "vinet.co.za" }
+]
+
+[vars]
+SPYLNX_URL = "https://splynx.vinet.co.za"
+SPYLNX_AUTH = "Basic NTcxMDRhNGJjNjhhY2Y2MjRkMDliMmYwOTQ1ZTI1M2E6N2UyOTNmY2QyNzBjODJmOTdjNWQzODUwZjdhM2I1MTE="
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vinet-scheduler"
+database_id = "YOUR_D1_DB_ID"
