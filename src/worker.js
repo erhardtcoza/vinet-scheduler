@@ -32,25 +32,23 @@ export default {
     }
 
     // ----------------------------------
-    // REAL SCHEDULING TASKS ENDPOINT
+    // SAME HELPER YOUR OTHER APPS USE
     // ----------------------------------
-    async function fetchSplynx(env) {
+    async function splynxFetch(env, path, opt = {}) {
+      const base = (env.SPLYNX_URL || "").replace(/\/$/, "");
+      const headers = {
+        Authorization: env.AUTH_HEADER || "",
+        "Content-Type": "application/json",
+        ...(opt.headers || {})
+      };
 
-      const url = `${env.SPLYNX_URL}/api/2.0/admin/scheduling/tasks`;
+      const r = await fetch(base + path, { ...opt, headers });
+      const t = await r.text();
 
-      const res = await fetch(url, {
-        headers: {
-          Authorization: env.AUTH_HEADER
-        }
-      });
+      let j = null;
+      try { j = JSON.parse(t); } catch {}
 
-      if (!res.ok) {
-        const txt = await res.text();
-        console.error("SPYLNX ERROR", res.status, txt);
-        throw new Error(`Splynx failure ${res.status}`);
-      }
-
-      return res.json();
+      return { ok: r.ok, status: r.status, json: j, text: t };
     }
 
     async function getCache(env) {
@@ -66,6 +64,9 @@ export default {
       ).bind(JSON.stringify(payload), Date.now()).run();
     }
 
+    // ----------------------------------
+    // LOAD TASKS + CACHE
+    // ----------------------------------
     async function loadTasks(env, force = false) {
 
       const cached = await getCache(env);
@@ -73,15 +74,19 @@ export default {
       if (!force && cached && Date.now() - cached.last_updated < AUTO_REFRESH_MS)
         return { data: JSON.parse(cached.payload), last: cached.last_updated };
 
-      const api = await fetchSplynx(env);
+      const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
 
-      const tasks = api.data || api;
+      if (!res.ok) {
+        console.error("SPYLNX ERROR", res.status, res.text);
+        throw new Error(`Splynx failure ${res.status}`);
+      }
+
+      const tasks = res.json?.data || res.json || [];
 
       const grouped = {};
 
       for (const t of tasks) {
 
-        // ONLY todo
         if (t.status !== "todo") continue;
 
         const admin =
@@ -99,7 +104,7 @@ export default {
           type: t.type || "",
           category: t.category || "",
           note: t.description || "",
-          link: `${env.SPLYNX_URL}/admin/scheduling/tasks/${t.id}`
+          link: (env.SPLYNX_URL || "").replace(/\/$/,"") + `/admin/scheduling/tasks/${t.id}`
         });
       }
 
@@ -108,9 +113,9 @@ export default {
       return { data: grouped, last: Date.now() };
     }
 
-    // -------------------------------
+    // ----------------------------------
     // REQUEST FLOW
-    // -------------------------------
+    // ----------------------------------
     const url = new URL(request.url);
     const origin = url.origin;
     const ip = await getClientIP(request);
@@ -146,11 +151,11 @@ export default {
       return new Response("Invalid login", { status: 401 });
     }
 
-    // Auth guard
+    // Require login
     if (!hasSession(request))
       return Response.redirect(origin + "/login", 302);
 
-    // API calls
+    // API routes
     if (url.pathname === "/api/tasks")
       return json(await loadTasks(env, false));
 
