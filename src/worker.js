@@ -4,12 +4,10 @@ export default {
     const USERNAME = "vinet";
     const PASSWORD = "Vinet007!";
     const SESSION_NAME = "vinet_session";
-
     const AUTO_REFRESH_MS = 60 * 60 * 1000;
-    const ADMIN_CACHE_MS = 24 * 60 * 60 * 1000;
 
     function html(body) {
-      return new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      return new Response(body, { headers: { "Content-Type": "text/html" } });
     }
 
     function json(data, status = 200) {
@@ -40,7 +38,6 @@ export default {
         "Content-Type": "application/json",
         ...(opt.headers || {})
       };
-
       const r = await fetch(base + path, { ...opt, headers });
       const t = await r.text();
       let j = null;
@@ -48,81 +45,82 @@ export default {
       return { ok: r.ok, status: r.status, json: j, text: t };
     }
 
-    async function getCache(env, id) {
-      return env.DB.prepare("SELECT payload,last_updated FROM task_cache WHERE id=?").bind(id).first();
+    async function getCache(env) {
+      return env.DB.prepare(
+        "SELECT payload,last_updated FROM task_cache WHERE id=1"
+      ).first();
     }
 
-    async function setCache(env, id, payload) {
-      return env.DB.prepare(`
-        INSERT OR REPLACE INTO task_cache (id,payload,last_updated)
-        VALUES (?,?,?)
-      `).bind(id, JSON.stringify(payload), Date.now()).run();
+    async function setCache(env, payload) {
+      return env.DB.prepare(
+        `INSERT OR REPLACE INTO task_cache (id,payload,last_updated)
+         VALUES (1,?,?)`
+      ).bind(JSON.stringify(payload), Date.now()).run();
+    }
+
+    function duration(start, end) {
+      if (!start || !end) return "";
+      const s = new Date(start).getTime();
+      const e = new Date(end).getTime();
+      if (!s || !e) return "";
+      const ms = e - s;
+      const d = Math.floor(ms / 86400000);
+      const h = Math.floor((ms % 86400000) / 3600000);
+      return `${d}d ${h}h`;
     }
 
     async function loadAdmins(env) {
-      const cached = await getCache(env, 2);
-      if (cached && Date.now() - cached.last_updated < ADMIN_CACHE_MS)
-        return JSON.parse(cached.payload);
-
       const res = await splynxFetch(env, "/api/2.0/admin/administration/administrators");
-      const admins = res.json?.data || res.json || [];
-
+      const list = res.json?.data || res.json || [];
       const map = {};
-      for (const a of admins) map[a.id] = a.name || a.login || `Admin #${a.id}`;
-
-      await setCache(env, 2, map);
+      list.forEach(a => map[a.id] = a.name || a.login || `Admin #${a.id}`);
       return map;
-    }
-
-    function duration(from, to) {
-      if (!from || !to) return "";
-      const ms = new Date(to) - new Date(from);
-      if (ms <= 0) return "";
-      const h = Math.floor(ms / 3600000);
-      const m = Math.floor((ms % 3600000) / 60000);
-      return `${h}h ${m}m`;
-    }
-
-    function getStatusName(t) {
-      return (
-        t.status_name ||
-        t.workflow_status_name ||
-        (t.workflow_status && t.workflow_status.name) ||
-        t.status ||
-        ""
-      ).trim();
     }
 
     async function loadTasks(env, force = false) {
 
-      const cached = await getCache(env, 1);
+      const cached = await getCache(env);
       if (!force && cached && Date.now() - cached.last_updated < AUTO_REFRESH_MS)
         return { data: JSON.parse(cached.payload), last: cached.last_updated };
 
-      const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
-      if (!res.ok) throw new Error("Splynx error");
-
       const admins = await loadAdmins(env);
+
+      const res = await splynxFetch(env, "/api/2.0/admin/scheduling/tasks");
+      if (!res.ok) throw new Error("Splynx failure");
+
       const tasks = res.json?.data || res.json || [];
 
       const grouped = {};
+      const all = [];
 
-      const pendingStatuses = [
-        "To Do",
-        "In progress",
-        "Add Work / Not Completed",
-        "Awaiting Client",
-        "Billing - More Info Req",
-        "Billing - To Bill"
-      ];
+      function normalize(s) {
+        return (s || "").toString().trim().toLowerCase();
+      }
 
-      const doneStatuses = ["Done"];
+      const isPending = s =>
+        [
+          "to do",
+          "to-do",
+          "todo",
+          "in progress",
+          "add work / not completed",
+          "awaiting client",
+          "billing - more info req",
+          "billing - to bill"
+        ].includes(normalize(s));
+
+      const isDone = s =>
+        ["done", "completed"].includes(normalize(s));
 
       for (const t of tasks) {
 
-        const status = getStatusName(t);
+        const status =
+          t.status_name ||
+          t.workflow_status_name ||
+          t.workflow_status ||
+          "";
 
-        if (status === "To Archive") continue;
+        if (normalize(status) === "to archive") continue;
         if (String(t.is_archived) === "1") continue;
 
         let admin = "Unassigned";
@@ -136,21 +134,25 @@ export default {
           address: t.address || "",
           title: t.title || "",
           priority: t.priority || "",
-          created: t.created_at || "",
+          created: t.created_at || t.date_created || "",
           completed: t.resolved_at || "",
-          note: t.description || "",
-          status,
+          status: status,
           sla: duration(t.created_at, t.resolved_at),
+          admin,
           link: (env.SPLYNX_URL || "").replace(/\/$/, "") + `/admin/scheduling/tasks/view?id=${t.id}`
         };
 
-        if (doneStatuses.includes(status)) grouped[admin].done.push(obj);
-        else if (pendingStatuses.includes(status)) grouped[admin].pending.push(obj);
+        if (isDone(status)) grouped[admin].done.push(obj);
+        else if (isPending(status)) grouped[admin].pending.push(obj);
+
+        all.push(obj);
       }
 
-      await setCache(env, 1, grouped);
+      const payload = { grouped, all };
 
-      return { data: grouped, last: Date.now() };
+      await setCache(env, payload);
+
+      return { data: payload, last: Date.now() };
     }
 
     const url = new URL(request.url);
@@ -198,51 +200,45 @@ export default {
   }
 }
 
-const UI_HTML = `<!doctype html>
+
+const UI_HTML = `
+<!doctype html>
 <html>
 <head>
-<meta charset="UTF-8">
 <title>Vinet Scheduling</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body{font-family:Arial;margin:10px;max-width:1300px;margin-left:auto;margin-right:auto;background:#fafafa;}
-.header{display:flex;align-items:center;gap:15px;background:#fff;padding:10px 15px;border-radius:10px;border:1px solid #ddd;}
-.header img{height:40px;}
-.header h2{margin:0;color:#c00000;}
-button{background:#c00000;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;}
-button:hover{background:#900;}
-.summary{margin-top:10px;font-weight:bold;}
-.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px;}
-.tile{border:1px solid #ddd;padding:12px;border-radius:10px;background:#fff;cursor:grab;}
-.tile.hidden{opacity:0.3;}
-.count{font-size:26px;font-weight:bold;color:#c00000;}
-.meta{font-size:12px;color:#555;}
-table{width:100%;border-collapse:collapse;margin-top:10px;background:#fff;font-size:13px;}
-td,th{border:1px solid #ddd;padding:6px;}
-th{background:#f5f5f5;}
-.row-green{background:#e5f8e5;}
-.row-yellow{background:#fff7cf;}
-.row-red{background:#ffdede;}
-.modal{position:fixed;top:0;left:0;right:0;bottom:0;background:#0007;display:none;align-items:center;justify-content:center;}
-.modal-content{background:#fff;padding:18px;border-radius:10px;width:92%;max-height:90vh;overflow:auto;}
-#spinner{display:none;}
+body{font-family:Arial;margin:15px;}
+.header{display:flex;align-items:center;gap:15px;flex-wrap:wrap;}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:10px;}
+.tile{border:1px solid #ccc;border-radius:10px;padding:10px;background:#fafafa}
+.count{font-size:26px;font-weight:bold}
+.hidebox{font-size:12px}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+td,th{border-bottom:1px solid #ddd;padding:6px}
+.row{cursor:pointer}
+.badge{font-size:12px;padding:2px 6px;border-radius:6px}
+.status-done{background:#d9fdd3}
+.status-pending{background:#fff5c2}
+#spinner{display:none}
 </style>
 </head>
 <body>
 
 <div class="header">
-  <img src="https://static.vinet.co.za/logo.jpeg">
+  <img src="https://static.vinet.co.za/logo.jpeg" height="40">
   <h2>Vinet Scheduling</h2>
   <button onclick="refresh()">Refresh</button>
   <span id="last"></span>
-  <span id="spinner">Loading...</span>
+  <span id="spinner">Loading…</span>
 </div>
 
-<div id="summary" class="summary"></div>
+<div id="summary"></div>
 
-<div class="tiles" id="tiles"></div>
+<div id="tiles" class="tiles"></div>
 
 <h3>All Tasks</h3>
-<input id="globalsearch" placeholder="Search client / address / title..." style="width:100%;padding:6px" oninput="renderGlobal()">
+<input id="search" placeholder="Search client / address / title..." style="width:100%;padding:6px" oninput="renderAll()"/>
 
 <table>
 <thead>
@@ -258,160 +254,84 @@ th{background:#f5f5f5;}
 <th>Admin</th>
 </tr>
 </thead>
-<tbody id="globalrows"></tbody>
+<tbody id="allrows"></tbody>
 </table>
 
-<div id="modal" class="modal">
-<div class="modal-content">
-<button onclick="closeModal()">Close</button>
-<h3 id="mtitle"></h3>
-<select id="viewmode" onchange="renderRows()">
-<option value="pending">Pending</option>
-<option value="done">Done</option>
-<option value="all">All</option>
-</select>
-<input id="search" placeholder="Search" oninput="renderRows()">
-<table width="100%" id="rows"></table>
-</div>
-</div>
-
 <script>
-let data={};
-let tasksFlat=[];
-let hiddenAdmins=JSON.parse(localStorage.getItem("hiddenAdmins")||"[]");
-let order=JSON.parse(localStorage.getItem("tileOrder")||"[]");
-let activeUser="";
+let data={grouped:{},all:[]};
 
 async function load(force=false){
-  document.getElementById("spinner").style.display="inline";
-  const res=await fetch(force?"/api/refresh":"/api/tasks");
-  const j=await res.json();
+  spinner(true);
+  const r=await fetch(force?"/api/refresh":"/api/tasks");
+  const j=await r.json();
   data=j.data;
-  buildFlat();
-  renderTiles();
-  renderGlobal();
-  document.getElementById("summary").innerText="Total pending: "+tasksFlat.filter(t=>t.status==="Pending").length+" | Done: "+tasksFlat.filter(t=>t.status==="Done").length;
   document.getElementById("last").innerText="Last updated: "+new Date(j.last).toLocaleString();
-  document.getElementById("spinner").style.display="none";
+  renderTiles();
+  renderAll();
+  spinner(false);
 }
+
+function spinner(b){document.getElementById("spinner").style.display=b?"inline":"none";}
 
 function refresh(){ load(true); }
 
-function buildFlat(){
-  tasksFlat=[];
-  Object.keys(data).forEach(a=>{
-    data[a].pending.forEach(t=>tasksFlat.push({...t,admin:a,status:"Pending"}));
-    data[a].done.forEach(t=>tasksFlat.push({...t,admin:a,status:"Done"}));
-  });
-}
-
-function orderedAdmins(){
-  const admins=Object.keys(data);
-  const set=new Set(order);
-  const existing=order.filter(a=>admins.includes(a));
-  const missing=admins.filter(a=>!set.has(a));
-  return [...existing,...missing];
-}
-
 function renderTiles(){
   const t=document.getElementById("tiles");
+  const s=document.getElementById("summary");
+
+  let tp=0,td=0;
   t.innerHTML="";
-  orderedAdmins().forEach(admin=>{
-    if(!data[admin]) return;
-    const p=data[admin].pending.length;
-    const d=data[admin].done.length;
-    const box=document.createElement("div");
-    box.className="tile";
-    if(hiddenAdmins.includes(admin)) box.classList.add("hidden");
-    box.innerHTML=\`
-      <b>\${admin}</b>
-      <div class="count">\${p}</div>
-      <div class="meta">Done: \${d}</div>
-      <label><input type="checkbox" \${hiddenAdmins.includes(admin)?"checked":""} onchange="toggleHide('\${admin}')"> Hide</label>
+  Object.keys(data.grouped).forEach(a=>{
+    const g=data.grouped[a];
+    const pending=g.pending.length;
+    const done=g.done.length;
+    tp+=pending;td+=done;
+
+    const d=document.createElement("div");
+    d.className="tile";
+    d.innerHTML=\`
+      <b>\${a}</b><br>
+      <span class="count">\${pending}</span> pending<br>
+      Done: \${done}<br>
+      <label class="hidebox"><input type="checkbox" onchange="toggleHide('\${a}')" /> Hide</label>
     \`;
-    box.onclick=()=>openModal(admin);
-    t.appendChild(box);
+    t.appendChild(d);
   });
+
+  s.innerHTML=\`<b>Total pending:</b> \${tp} | <b>Done:</b> \${td}\`;
 }
 
 function toggleHide(a){
-  if(hiddenAdmins.includes(a)) hiddenAdmins=hiddenAdmins.filter(x=>x!==a);
-  else hiddenAdmins.push(a);
-  localStorage.setItem("hiddenAdmins",JSON.stringify(hiddenAdmins));
-  renderTiles();renderGlobal();
+  const h=JSON.parse(localStorage.getItem("hiddenAdmins")||"[]");
+  if(h.includes(a)) localStorage.setItem("hiddenAdmins",JSON.stringify(h.filter(x=>x!==a)));
+  else{h.push(a);localStorage.setItem("hiddenAdmins",JSON.stringify(h));}
+  renderAll();
 }
 
-function openModal(a){
-  activeUser=a;
-  document.getElementById("mtitle").innerText=a;
-  renderRows();
-  document.getElementById("modal").style.display="flex";
-}
-
-function closeModal(){document.getElementById("modal").style.display="none";}
-
-function ageColor(d){
-  const days=(Date.now()-new Date(d))/86400000;
-  if(days<=3) return "row-green";
-  if(days<=6) return "row-yellow";
-  return "row-red";
-}
-
-function renderRows(){
-  const mode=document.getElementById("viewmode").value;
+function renderAll(){
   const q=document.getElementById("search").value.toLowerCase();
-  let arr=[];
-  if(mode!=="done") arr=arr.concat(data[activeUser].pending.map(t=>({...t,status:"Pending"})));
-  if(mode!=="pending") arr=arr.concat(data[activeUser].done.map(t=>({...t,status:"Done"})));
-  arr=arr.filter(t=>
-    (t.customer+"").toLowerCase().includes(q)||
-    (t.address||"").toLowerCase().includes(q)||
-    (t.title||"").toLowerCase().includes(q)
-  );
-  const el=document.getElementById("rows");
-  el.innerHTML="";
-  arr.forEach(t=>{
-    const r=document.createElement("tr");
-    if(t.status==="Pending") r.className=ageColor(t.created);
-    r.onclick=()=>window.open(t.link,"_blank");
-    r.innerHTML=\`
-      <td>\${t.id}</td>
-      <td>\${t.customer||""}</td>
-      <td>\${t.address||""}</td>
-      <td>\${t.status}</td>
-      <td>\${t.priority||""}</td>
-      <td>\${t.created||""}</td>
-      <td>\${t.completed||""}</td>
-      <td>\${t.sla||""}</td>
-    \`;
-    el.appendChild(r);
-  });
-}
+  const el=document.getElementById("allrows");
+  const hidden=JSON.parse(localStorage.getItem("hiddenAdmins")||"[]");
 
-function renderGlobal(){
-  const q=document.getElementById("globalsearch").value.toLowerCase();
-  const el=document.getElementById("globalrows");
   el.innerHTML="";
-  tasksFlat
-  .filter(t=>!hiddenAdmins.includes(t.admin))
-  .filter(t=>
-    (t.customer+"").toLowerCase().includes(q)||
-    (t.address||"").toLowerCase().includes(q)||
-    (t.title||"").toLowerCase().includes(q)
-  )
-  .forEach(t=>{
+  data.all.filter(t=>
+    !hidden.includes(t.admin) &&
+    ((t.title||"").toLowerCase().includes(q) ||
+     (t.address||"").toLowerCase().includes(q) ||
+     (t.customer||"").toString().includes(q))
+  ).forEach(t=>{
     const r=document.createElement("tr");
-    if(t.status==="Pending") r.className=ageColor(t.created);
+    r.className="row";
     r.onclick=()=>window.open(t.link,"_blank");
     r.innerHTML=\`
       <td>\${t.id}</td>
-      <td>\${t.customer||""}</td>
-      <td>\${t.address||""}</td>
+      <td>\${t.customer}</td>
+      <td>\${t.address}</td>
       <td>\${t.status}</td>
-      <td>\${t.priority||""}</td>
-      <td>\${t.created||""}</td>
-      <td>\${t.completed||""}</td>
-      <td>\${t.sla||""}</td>
+      <td>\${t.priority}</td>
+      <td>\${t.created}</td>
+      <td>\${t.completed}</td>
+      <td>\${t.sla}</td>
       <td>\${t.admin}</td>
     \`;
     el.appendChild(r);
@@ -422,4 +342,5 @@ load();
 </script>
 
 </body>
-</html>`;
+</html>
+`;
