@@ -166,7 +166,7 @@ const UI_HTML = `<!doctype html>
 
 <style>
 
-body{font-family:Arial;margin:20px;}
+body{font-family:Arial;margin:20px;max-width:1400px;margin-left:auto;margin-right:auto;}
 
 .header{display:flex;align-items:center;gap:20px;}
 
@@ -174,9 +174,17 @@ body{font-family:Arial;margin:20px;}
 
 .brand{color:#b30000;font-weight:bold;font-size:20px;}
 
-.tiles{display:grid;grid-template-columns:repeat(auto-fill,260px);gap:15px;margin-top:10px;}
+.tiles{display:flex;flex-wrap:wrap;gap:15px;margin-top:10px;}
 
-.tile{border:1px solid #ddd;padding:15px;border-radius:10px;cursor:pointer;background:#fafafa;box-shadow:0 2px 4px rgba(0,0,0,0.05);}
+.tile{
+  border:1px solid #ddd;
+  padding:15px;
+  border-radius:10px;
+  cursor:move;
+  background:#fafafa;
+  box-shadow:0 2px 4px rgba(0,0,0,0.05);
+  width:230px;
+}
 
 .tile:hover{background:#fff;}
 
@@ -184,7 +192,29 @@ body{font-family:Arial;margin:20px;}
 
 .done{font-size:14px;color:#008000;}
 
-.loading,.modal{position:fixed;top:0;left:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;background:#0006;z-index:99;}
+.hiddenBar{
+  margin-top:15px;
+  padding:8px;
+  background:#f4f4f4;
+  border-radius:10px;
+  font-size:13px;
+}
+
+.hiddenTag{
+  display:inline-block;
+  background:#fff;
+  border:1px solid #ccc;
+  padding:4px 7px;
+  border-radius:8px;
+  margin-right:6px;
+  cursor:pointer;
+}
+
+.loading,.modal{
+  position:fixed;top:0;left:0;right:0;bottom:0;
+  display:none;align-items:center;justify-content:center;
+  background:#0006;z-index:99;
+}
 
 .modal-content{background:#fff;padding:20px;border-radius:10px;max-height:90vh;width:90%;overflow:auto;}
 
@@ -218,6 +248,8 @@ body{font-family:Arial;margin:20px;}
 
 <div id="tiles" class="tiles"></div>
 
+<div id="hidden" class="hiddenBar"></div>
+
 <div class="search">
   <input id="search" placeholder="Search client code / address / title..." style="width:300px;padding:6px;">
 </div>
@@ -236,14 +268,6 @@ body{font-family:Arial;margin:20px;}
   <tbody></tbody>
 </table>
 
-<div id="modal" class="modal">
-  <div class="modal-content">
-    <button onclick="closeModal()">Close</button>
-    <h3 id="mtitle"></h3>
-    <table id="rows" width="100%"></table>
-  </div>
-</div>
-
 <script>
 
 let data={};
@@ -251,18 +275,25 @@ let all=[];
 let sortField='id';
 let sortDir='desc';
 
-// -------- AUTO REFRESH EVERY 15 MIN ----------
-setInterval(()=>refresh(), 15*60*1000);
+let order=JSON.parse(localStorage.getItem("order")||"[]");
+let hidden=JSON.parse(localStorage.getItem("hidden")||"[]");
 
-// ---------------------------------------------
+setInterval(()=>refresh(), 15*60*1000);
 
 async function load(force=false){
   document.getElementById("loading").style.display="flex";
   const res=await fetch(force?"/api/refresh":"/api/tasks");
   const j=await res.json();
   data=j.data;
+
+  const names=Object.keys(data);
+
+  if(order.length===0) order=names;
+  else order=order.filter(n=>names.includes(n)).concat(names.filter(n=>!order.includes(n)));
+
   all=[];
-  Object.values(data).forEach(a=>a.todoList.forEach(t=>all.push(t)));
+  names.forEach(a=>data[a].todoList.forEach(t=>all.push(t)));
+
   document.getElementById("last").innerText="Last updated: "+new Date(j.last).toLocaleString();
   renderTiles();
   renderAllRows();
@@ -274,14 +305,63 @@ function refresh(){ load(true); }
 function renderTiles(){
   const t=document.getElementById("tiles");
   t.innerHTML="";
-  Object.keys(data).forEach(admin=>{
+
+  order.forEach(admin=>{
+    if(hidden.includes(admin)) return;
+
     const d=document.createElement("div");
     d.className="tile";
-    d.innerHTML=\`<b>\${admin}</b>
+    d.draggable=true;
+
+    d.innerHTML=\`
+      <b>\${admin}</b>
       <div class="count">\${data[admin].todo}</div>
-      <div class="done">Done: \${data[admin].done}</div>\`;
+      <div class="done">Done: \${data[admin].done}</div>
+      <label><input type="checkbox" onchange="toggleHide('\${admin}')" \${hidden.includes(admin)?'checked':''}/> Hide</label>
+    \`;
+
     d.onclick=()=>openModal(admin);
+
+    d.ondragstart=e=>{e.dataTransfer.setData("text/plain",admin);};
+    d.ondragover=e=>e.preventDefault();
+    d.ondrop=e=>{
+      e.preventDefault();
+      const from=e.dataTransfer.getData("text/plain");
+      const to=admin;
+      reorder(from,to);
+    };
+
     t.appendChild(d);
+  });
+
+  renderHidden();
+}
+
+function reorder(a,b){
+  const i=order.indexOf(a);
+  const j=order.indexOf(b);
+  order.splice(i,1);
+  order.splice(j,0,a);
+  localStorage.setItem("order",JSON.stringify(order));
+  renderTiles();
+}
+
+function toggleHide(name){
+  if(hidden.includes(name)) hidden=hidden.filter(x=>x!==name);
+  else hidden.push(name);
+  localStorage.setItem("hidden",JSON.stringify(hidden));
+  renderTiles();
+}
+
+function renderHidden(){
+  const bar=document.getElementById("hidden");
+  bar.innerHTML="";
+  hidden.forEach(h=>{
+    const tag=document.createElement("span");
+    tag.className="hiddenTag";
+    tag.innerText=h;
+    tag.onclick=()=>toggleHide(h);
+    bar.appendChild(tag);
   });
 }
 
@@ -304,7 +384,7 @@ function renderAllRows(){
 
   arr.sort((a,b)=>{
     let av=a[sortField]||'', bv=b[sortField]||'';
-    if(sortField==='id') {av=+av; bv=+bv;}
+    if(sortField==='id'){av=+av;bv=+bv;}
     return sortDir==='asc'?(av>bv?1:-1):(av<bv?1:-1);
   });
 
@@ -324,28 +404,7 @@ function renderAllRows(){
   });
 }
 
-function openModal(admin){
-  const tasks=data[admin].todoList;
-  document.getElementById("mtitle").innerText=\`\${admin} — To-Do Tasks (\${tasks.length})\`;
-  const el=document.getElementById("rows");
-  el.innerHTML="";
-  tasks.forEach(t=>{
-    const r=document.createElement("tr");
-    r.onclick=()=>window.open(t.link,"_blank");
-    r.innerHTML=\`
-      <td>\${t.id}</td>
-      <td>\${t.customer}</td>
-      <td>\${t.address}</td>
-      <td>\${t.created}</td>
-      <td>\${t.title}</td>\`;
-    el.appendChild(r);
-  });
-  document.getElementById("modal").style.display="flex";
-}
-
-function closeModal(){
-  document.getElementById("modal").style.display="none";
-}
+function openModal(){}
 
 load();
 
