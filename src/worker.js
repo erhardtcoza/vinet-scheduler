@@ -163,6 +163,7 @@ const UI_HTML = `<!doctype html>
 <html>
 <head>
 <title>Vinet Scheduling</title>
+
 <style>
 
 body{font-family:Arial;margin:20px;}
@@ -175,7 +176,9 @@ body{font-family:Arial;margin:20px;}
 
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,260px);gap:15px;margin-top:10px;}
 
-.tile{border:1px solid #ddd;padding:15px;border-radius:10px;cursor:pointer;background:#fafafa;}
+.tile{border:1px solid #ddd;padding:15px;border-radius:10px;cursor:pointer;background:#fafafa;box-shadow:0 2px 4px rgba(0,0,0,0.05);}
+
+.tile:hover{background:#fff;}
 
 .count{font-size:34px;font-weight:bold;color:#c40000;}
 
@@ -185,14 +188,21 @@ body{font-family:Arial;margin:20px;}
 
 .modal-content{background:#fff;padding:20px;border-radius:10px;max-height:90vh;width:90%;overflow:auto;}
 
-#rows td,#allrows td{padding:6px;border-bottom:1px solid #eee;}
-
 .search{margin-top:25px;margin-bottom:8px;}
 
-th{cursor:pointer;text-align:left;border-bottom:2px solid #ccc;padding:6px;}
+#allrows{border-collapse:collapse;width:100%;font-size:13px;}
+
+#allrows thead{background:#f6f6f6;}
+
+#allrows th{padding:8px;border-bottom:2px solid #ccc;cursor:pointer;}
+
+#allrows td{padding:6px;border-bottom:1px solid #eee;}
+
+#allrows tr:hover{background:#f9f9f9;}
 
 </style>
 </head>
+
 <body>
 
 <div class="header">
@@ -209,10 +219,10 @@ th{cursor:pointer;text-align:left;border-bottom:2px solid #ccc;padding:6px;}
 <div id="tiles" class="tiles"></div>
 
 <div class="search">
-  <input id="search" placeholder="Search client code / address / title..." style="width:300px;" oninput="renderAllRows()">
+  <input id="search" placeholder="Search client code / address / title..." style="width:300px;padding:6px;">
 </div>
 
-<table id="allrows" width="100%">
+<table id="allrows">
   <thead>
     <tr>
       <th onclick="setSort('id')">ID</th>
@@ -238,8 +248,13 @@ th{cursor:pointer;text-align:left;border-bottom:2px solid #ccc;padding:6px;}
 
 let data={};
 let all=[];
-let sortField='created';
-let sortDir='asc';
+let sortField='id';
+let sortDir='desc';
+
+// -------- AUTO REFRESH EVERY 15 MIN ----------
+setInterval(()=>refresh(), 15*60*1000);
+
+// ---------------------------------------------
 
 async function load(force=false){
   document.getElementById("loading").style.display="flex";
@@ -276,8 +291,11 @@ function setSort(f){
   renderAllRows();
 }
 
+document.getElementById("search").oninput=()=>renderAllRows();
+
 function renderAllRows(){
   const q=document.getElementById("search").value.toLowerCase();
+
   let arr=all.filter(t=>
     (t.customer+'').toLowerCase().includes(q) ||
     (t.address||'').toLowerCase().includes(q) ||
@@ -286,7 +304,7 @@ function renderAllRows(){
 
   arr.sort((a,b)=>{
     let av=a[sortField]||'', bv=b[sortField]||'';
-    if(sortField==='id') {av=+av;bv=+bv;}
+    if(sortField==='id') {av=+av; bv=+bv;}
     return sortDir==='asc'?(av>bv?1:-1):(av<bv?1:-1);
   });
 
@@ -307,7 +325,7 @@ function renderAllRows(){
 }
 
 function openModal(admin){
-  tasks=data[admin].todoList;
+  const tasks=data[admin].todoList;
   document.getElementById("mtitle").innerText=\`\${admin} — To-Do Tasks (\${tasks.length})\`;
   const el=document.getElementById("rows");
   el.innerHTML="";
